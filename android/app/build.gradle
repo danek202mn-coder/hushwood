@@ -1,0 +1,32 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.klyro.hushwood'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.klyro.hushwood'
+        minSdk 24
+        targetSdk 35
+        versionCode 1200
+        versionName '12.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    androidResources {
+        noCompress 'html'
+    }
+}

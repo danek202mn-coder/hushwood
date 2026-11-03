@@ -1,0 +1,392 @@
+import * as THREE from 'three';
+import { box } from './world.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+
+const V2 = THREE.Vector2;
+const Lm = (o) => new THREE.MeshLambertMaterial(o);
+const C = (c, e) => Lm({ color: c, emissive: e || 0 });
+function joint(parent, x = 0, y = 0, z = 0) { const g = new THREE.Group(); g.position.set(x, y, z); parent.add(g); return g; }
+function mesh(geo, mat, x = 0, y = 0, z = 0) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); return m; }
+function capsule(r, len, mat, seg = 10) { const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 4, seg), mat); m.position.y = -len / 2; return m; }
+function sphere(r, mat, x, y, z, sx = 1, sy = 1, sz = 1, seg = 14) { const m = mesh(new THREE.SphereGeometry(r, seg, Math.max(6, seg * 0.7 | 0)), mat, x, y, z); m.scale.set(sx, sy, sz); return m; }
+function lathe(pts, mat, seg = 18) { return new THREE.Mesh(new THREE.LatheGeometry(pts.map(([r, y]) => new V2(r, y)), seg), mat); }
+function cone(r, h, mat, seg = 8) { return new THREE.Mesh(new THREE.ConeGeometry(r, h, seg), mat); }
+// конечность из двух звеньев: плечо/бедро → локоть/колено → кисть/стопа
+function limb(parent, x, y, z, l1, r1, l2, r2, m1, m2) {
+  const a = joint(parent, x, y, z); a.add(capsule(r1, l1, m1));
+  const b = joint(a, 0, -l1, 0); b.add(capsule(r2, l2, m2 || m1));
+  const end = joint(b, 0, -l2, 0);
+  return { a, b, end };
+}
+// костлявая кисть с пальцами
+function hand(parent, skin, fl = 0.09, nail) {
+  parent.add(box(0.07, 0.08, 0.035, skin, 0, -0.04, 0));
+  const fingers = [];
+  for (let i = 0; i < 4; i++) {
+    const f = joint(parent, -0.026 + i * 0.017, -0.08, 0);
+    f.add(capsule(0.008, fl * (i === 0 || i === 3 ? 0.8 : 1), skin, 5));
+    if (nail) { const n = box(0.012, 0.02, 0.008, nail, 0, -fl * (i === 0 || i === 3 ? 0.8 : 1) - 0.005, 0.004); f.add(n); }
+    f.rotation.x = 0.25; fingers.push(f);
+  }
+  const th = joint(parent, 0.04, -0.03, 0.01); th.add(capsule(0.009, fl * 0.6, skin, 5)); th.rotation.z = 0.7;
+  return fingers;
+}
+// рот с челюстью и зубами — для крика
+function mouth(head, skin, y, z, w, teethCol = 0xd8c890) {
+  const inside = Lm({ color: 0x150505 });
+  head.add(sphere(0.045, inside, 0, y, z - 0.012, w / 0.09, 0.6, 0.6, 10));
+  const upper = Lm({ color: teethCol });
+  for (let i = 0; i < 6; i++) head.add(box(0.011, 0.016 + (i % 2) * 0.006, 0.01, upper, -w * 0.4 + i * w * 0.16, y + 0.012, z + 0.003));
+  const jaw = joint(head, 0, y + 0.005, z - 0.05);
+  jaw.add(sphere(0.06, skin, 0, -0.03, 0.04, w / 0.11, 0.55, 0.85, 12));
+  for (let i = 0; i < 5; i++) jaw.add(box(0.011, 0.014, 0.01, upper, -w * 0.32 + i * w * 0.16, -0.008, 0.05));
+  return jaw;
+}
+
+// ================= ХОЗЯЙКА: слепая старуха =================
+export function makeHostess(T) {
+  const skin = Lm({ map: T.skin('#a89a88', 51) }), dress = Lm({ map: T.dress('#2c3826', 52) });
+  const apron = Lm({ map: T.dress('#7a7262', 53) }), shawl = Lm({ map: T.dress('#3a2a2a', 54) });
+  const hair = C(0x8c8a84), band = C(0xd8d2c0), blood = C(0x5a0a0a), dark = C(0x120c08), nail = C(0x5a5030);
+  const root = new THREE.Group();
+  const hips = joint(root, 0, 0.92, 0);
+  // юбка и фартук
+  const skirt = lathe([[0.17, 0.02], [0.24, -0.2], [0.31, -0.55], [0.38, -0.86], [0.36, -0.88]], dress); skirt.material.side = THREE.DoubleSide; hips.add(skirt);
+  const ap = box(0.36, 0.62, 0.02, apron, 0, -0.33, 0.27); ap.rotation.x = -0.15; hips.add(ap);
+  const legs = [-1, 1].map(s => { const l = limb(hips, 0.1 * s, -0.02, 0, 0.42, 0.055, 0.42, 0.045, dark); l.end.add(box(0.09, 0.07, 0.22, dark, 0, -0.03, 0.05)); return l; });
+  // корпус
+  const spine = joint(hips, 0, 0, 0); spine.rotation.x = 0.42;
+  spine.add(lathe([[0.16, 0], [0.19, 0.18], [0.2, 0.36], [0.15, 0.48], [0.06, 0.52]], dress));
+  const sh = lathe([[0.21, 0.34], [0.22, 0.43], [0.15, 0.5], [0.06, 0.53]], shawl); sh.material.side = THREE.DoubleSide; spine.add(sh);
+  const neck = joint(spine, 0, 0.5, 0.02); neck.add(capsule(0.04, 0.06, skin)); neck.children[0].position.y = 0.04;
+  // колокольчик на ленте
+  spine.add(box(0.012, 0.12, 0.012, C(0x5a1010), 0, 0.42, 0.18));
+  const bellM = lathe([[0, 0.05], [0.025, 0.045], [0.035, 0.01], [0.045, -0.02], [0.0, -0.02]], C(0xc9a227, 0x2a1800), 10); bellM.position.set(0, 0.34, 0.19); spine.add(bellM);
+  // голова
+  const head = joint(neck, 0, 0.09, 0.02); head.scale.setScalar(1.15);
+  head.add(sphere(0.115, skin, 0, 0.09, 0, 0.95, 1.15, 1.0));
+  head.add(sphere(0.06, skin, 0, 0.0, 0.04, 1.0, 0.8, 1.0)); // подбородок
+  // впалые щёки
+  head.add(sphere(0.03, Lm({ color: 0x5a5048 }), -0.07, 0.05, 0.07, 0.6, 1.2, 0.5)); head.add(sphere(0.03, Lm({ color: 0x5a5048 }), 0.07, 0.05, 0.07, 0.6, 1.2, 0.5));
+  // длинный нос
+  const nose = cone(0.02, 0.075, skin, 6); nose.rotation.x = Math.PI / 2 + 0.3; nose.position.set(0, 0.085, 0.13); head.add(nose);
+  // повязка на глазах с пятнами крови
+  const bnd = new THREE.Mesh(new THREE.CylinderGeometry(0.122, 0.12, 0.055, 18, 1, true), Lm({ color: 0xd8d2c0, side: THREE.DoubleSide })); bnd.position.y = 0.125; bnd.scale.set(0.98, 1, 1.05); head.add(bnd);
+  head.add(sphere(0.022, blood, -0.045, 0.12, 0.122, 1, 0.8, 0.3)); head.add(sphere(0.018, blood, 0.05, 0.125, 0.12, 1, 0.8, 0.3));
+  head.add(box(0.008, 0.05, 0.004, blood, -0.045, 0.085, 0.12)); head.add(box(0.008, 0.035, 0.004, blood, 0.05, 0.09, 0.118));
+  head.add(box(0.05, 0.05, 0.02, band, 0.11, 0.115, -0.06)); // узел
+  // ухо
+  head.add(sphere(0.022, skin, -0.112, 0.1, 0, 0.4, 1, 0.7)); head.add(sphere(0.022, skin, 0.112, 0.1, 0, 0.4, 1, 0.7));
+  // волосы: чепчик, пучок и пряди
+  head.add(mesh(new THREE.SphereGeometry(0.125, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.42), hair, 0, 0.13, -0.012));
+  head.add(sphere(0.07, hair, 0, 0.2, -0.1, 1, 0.9, 1));
+  for (let i = 0; i < 7; i++) { const s = box(0.008, 0.12 + (i % 3) * 0.05, 0.008, hair, -0.1 + i * 0.033, 0.07, -0.06 + (i % 2) * 0.03); s.rotation.z = (i - 3) * 0.08; head.add(s); }
+  const jaw = mouth(head, skin, 0.028, 0.105, 0.075);
+  // руки
+  const arms = [-1, 1].map(s => { const a = limb(spine, 0.22 * s, 0.43, 0, 0.3, 0.045, 0.28, 0.038, dress, skin); a.fingers = hand(a.end, skin, 0.1, nail); return a; });
+  const cane = mesh(new THREE.CylinderGeometry(0.02, 0.018, 1.05, 6), Lm({ map: T.wood }), 0, -0.45, 0.02); arms[1].end.add(cane);
+  root.userData = { kind: 'hostess', hips, spine, neck, head, jaw, legs, arms, eyeH: 1.62, scareDist: 0.55, hunch: 0.42 };
+  return bakeRig(root);
+}
+
+// ================= СТОРОЖ: дед-лунатик с фонарём =================
+export function makeWatchman(T) {
+  const skin = Lm({ map: T.skin('#9a8c7a', 61) }), shirt = Lm({ map: T.dress('#b0aa98', 62), side: THREE.DoubleSide });
+  const beard = C(0xd0ccc2), dark = C(0x100a06), nail = C(0x4a4028), eyeM = Lm({ color: 0xd8e0c8, emissive: 0x000000 });
+  const root = new THREE.Group();
+  const hips = joint(root, 0, 1.0, 0);
+  const legs = [-1, 1].map(s => { const l = limb(hips, 0.1 * s, 0, 0, 0.47, 0.06, 0.48, 0.045, shirt, skin); l.end.add(box(0.1, 0.05, 0.25, skin, 0, -0.02, 0.06)); return l; });
+  const spine = joint(hips, 0, 0, 0); spine.rotation.x = 0.1;
+  spine.add(lathe([[0.15, 0.0], [0.17, 0.2], [0.18, 0.45], [0.2, 0.6], [0.12, 0.66], [0.05, 0.68]], shirt));
+  // длинный подол ночной рубахи
+  const hem = lathe([[0.16, 0.02], [0.22, -0.3], [0.27, -0.62], [0.26, -0.64]], shirt); hips.add(hem);
+  spine.add(box(0.03, 0.4, 0.01, C(0x8a8478), 0, 0.42, 0.18)); // планка
+  for (let i = 0; i < 4; i++) spine.add(sphere(0.012, C(0xe0d8c8), 0, 0.3 + i * 0.09, 0.185));
+  const neck = joint(spine, 0, 0.66, 0); neck.add(capsule(0.045, 0.08, skin)); neck.children[0].position.y = 0.05;
+  const head = joint(neck, 0, 0.1, 0.01);
+  head.add(sphere(0.11, skin, 0, 0.1, 0, 0.92, 1.3, 1.0));
+  // впалые глазницы и веки
+  const sock = Lm({ color: 0x2a201a });
+  head.add(sphere(0.03, sock, -0.042, 0.13, 0.085, 1.1, 0.8, 0.5)); head.add(sphere(0.03, sock, 0.042, 0.13, 0.085, 1.1, 0.8, 0.5));
+  const eyes = [-1, 1].map(s => sphere(0.018, eyeM, 0.042 * s, 0.13, 0.093)); eyes.forEach(e => { e.userData.keep = true; head.add(e); });
+  const lids = [-1, 1].map(s => { const l = sphere(0.024, skin, 0.042 * s, 0.135, 0.099, 1, 1, 0.6); l.userData.keep = true; head.add(l); return l; });
+  head.add(box(0.06, 0.012, 0.03, C(0xb8b2a6), -0.045, 0.165, 0.09)); head.add(box(0.06, 0.012, 0.03, C(0xb8b2a6), 0.045, 0.165, 0.09)); // брови
+  const nose = cone(0.024, 0.08, skin, 6); nose.rotation.x = Math.PI / 2 + 0.5; nose.position.set(0, 0.1, 0.12); head.add(nose);
+  head.add(sphere(0.025, skin, -0.105, 0.1, 0, 0.4, 1.1, 0.7)); head.add(sphere(0.025, skin, 0.105, 0.1, 0, 0.4, 1.1, 0.7));
+  const jaw = mouth(head, skin, 0.035, 0.098, 0.07, 0x9a8a60);
+  // борода
+  const bd = lathe([[0.0, -0.3], [0.03, -0.24], [0.058, -0.12], [0.072, -0.02], [0.05, 0.02]], beard, 12); bd.position.set(0, -0.035, 0.07); bd.scale.z = 0.6; jaw.add(bd);
+  head.add(box(0.1, 0.02, 0.03, beard, 0, 0.065, 0.11)); // усы
+  // свисающий ночной колпак
+  const capM = Lm({ map: T.capStripe });
+  let cp = joint(head, 0, 0.22, -0.01);
+  cp.add(lathe([[0.118, 0], [0.11, 0.06], [0.0, 0.06]], capM, 14));
+  cp.add(lathe([[0.118, -0.04], [0.118, 0.0]], capM, 14));
+  let r = 0.1;
+  for (let i = 0; i < 4; i++) { const seg = joint(cp, 0, 0.06, 0); seg.rotation.x = -0.45; seg.add(mesh(new THREE.CylinderGeometry(r * 0.7, r, 0.13, 10), capM, 0, 0.065, 0)); cp = joint(seg, 0, 0.07, 0); r *= 0.7; }
+  cp.add(sphere(0.04, C(0xe0d8c8), 0, 0.03, 0));
+  // руки: левая вытянута вперёд, как у лунатика; правая держит фонарь
+  const arms = [-1, 1].map(s => { const a = limb(spine, 0.23 * s, 0.6, 0, 0.34, 0.045, 0.32, 0.038, shirt, skin); a.fingers = hand(a.end, skin, 0.1, nail); return a; });
+  const lantern = joint(arms[1].end, 0, -0.12, 0.02);
+  const frameM = C(0x2a2a28);
+  lantern.add(box(0.17, 0.03, 0.17, frameM, 0, 0.12, 0)); lantern.add(box(0.17, 0.03, 0.17, frameM, 0, -0.12, 0));
+  for (const [x, z] of [[-0.075, -0.075], [0.075, -0.075], [-0.075, 0.075], [0.075, 0.075]]) lantern.add(box(0.015, 0.24, 0.015, frameM, x, 0, z));
+  lantern.add(mesh(new THREE.ConeGeometry(0.1, 0.07, 4), frameM, 0, 0.17, 0).rotateY(Math.PI / 4));
+  const glow = box(0.12, 0.2, 0.12, new THREE.MeshBasicMaterial({ color: 0xffcf70 })); lantern.add(glow);
+  const ring = mesh(new THREE.TorusGeometry(0.04, 0.008, 4, 10), frameM, 0, 0.23, 0); lantern.add(ring);
+  const spot = new THREE.SpotLight(0xffc860, 40, 17, 0.55, 0.55, 1.4);
+  const tgt = new THREE.Object3D(); root.add(tgt); tgt.position.set(0, 0.4, 6);
+  spot.position.set(0.3, 1.45, 0.55); spot.target = tgt; root.add(spot);
+  const halo = new THREE.PointLight(0xffb050, 3, 4.5, 2); halo.position.set(0.3, 1.45, 0.55); root.add(halo);
+  root.userData = { kind: 'watchman', hips, spine, neck, head, jaw, legs, arms, lantern, spot, halo, glow, eyes, lids, eyeM, eyeH: 1.92, scareDist: 0.62 };
+  return bakeRig(root);
+}
+
+// ================= КУКЛА: фарфоровая заводная =================
+export function makeDoll(T) {
+  const porc = Lm({ map: T.porcelain }), dress = Lm({ map: T.dress('#2a4470', 71), side: THREE.DoubleSide }), lace = C(0xe8e2d6);
+  const hairM = C(0x3a1e0e), gold = C(0xb08a30, 0x281800), shoe = C(0x1a0a0a);
+  const root = new THREE.Group();
+  root.add(mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.42, 5), C(0x2a2a2a), 0, 0.22, 0));
+  root.add(mesh(new THREE.TorusGeometry(0.03, 0.006, 4, 8), C(0x2a2a2a), 0, 0.43, 0));
+  const body = joint(root, 0, 0, 0);
+  const torso = joint(body, 0, -0.16, 0);
+  torso.add(lathe([[0.06, 0.12], [0.08, 0.04], [0.07, -0.06], [0.1, -0.1], [0.2, -0.32], [0.22, -0.36], [0.0, -0.36]], dress, 16));
+  torso.add(lathe([[0.215, -0.33], [0.24, -0.38], [0.22, -0.4]], lace, 16));
+  torso.add(lathe([[0.09, 0.1], [0.11, 0.12], [0.06, 0.14]], lace, 12));
+  const legs = [-1, 1].map(s => { const l = limb(torso, 0.06 * s, -0.33, 0, 0.12, 0.022, 0.12, 0.02, porc); l.end.add(box(0.045, 0.035, 0.07, shoe, 0, -0.01, 0.015)); return l; });
+  const head = joint(body, 0, 0.02, 0);
+  head.add(sphere(0.15, porc, 0, 0, 0, 1, 1.05, 1));
+  // большие стеклянные глаза
+  const eyeMat = Lm({ color: 0x050505, emissive: 0x000000 });
+  const eyes = [-1, 1].map(s => { const w = sphere(0.042, C(0xf0ece4), 0.058 * s, 0.01, 0.125, 1, 1, 0.6); head.add(w); const iris = sphere(0.03, Lm({ color: 0x2a5a8a }), 0.058 * s, 0.01, 0.145, 1, 1, 0.4); head.add(iris); const p = sphere(0.016, eyeMat, 0.058 * s, 0.01, 0.155, 1, 1, 0.4); head.add(p); for (let i = 0; i < 5; i++) { const l = box(0.004, 0.022, 0.003, C(0x0a0a0a), 0.058 * s - 0.03 + i * 0.015, 0.055, 0.14); l.rotation.z = (i - 2) * 0.3; head.add(l); } return p; });
+  head.add(sphere(0.025, C(0xd07070), -0.085, -0.045, 0.115, 1, 0.6, 0.3)); head.add(sphere(0.025, C(0xd07070), 0.085, -0.045, 0.115, 1, 0.6, 0.3));
+  head.add(sphere(0.01, porc, 0, -0.02, 0.15));
+  const jaw = mouth(head, porc, -0.075, 0.13, 0.06, 0xf0ece4);
+  head.add(box(0.03, 0.01, 0.006, C(0x9a1a1a), 0, -0.068, 0.142));
+  // кудри и банты
+  const hcap = mesh(new THREE.SphereGeometry(0.158, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.45), hairM, 0, 0.01, -0.01); hcap.rotation.x = -0.35; head.add(hcap);
+  for (let i = 0; i < 12; i++) { const a = (i / 12) * Math.PI * 1.4 + Math.PI * 0.8; head.add(sphere(0.035, hairM, Math.sin(a) * 0.14, -0.04 - (i % 3) * 0.02, Math.cos(a) * 0.12)); }
+  for (const s of [-1, 1]) { head.add(sphere(0.04, C(0x8a1a2a), 0.12 * s, 0.11, -0.03, 1.4, 0.7, 0.5)); const tail = joint(head, 0.15 * s, 0.0, -0.06); tail.add(capsule(0.03, 0.16, hairM)); tail.rotation.z = 0.25 * s; }
+  const arms = [-1, 1].map(s => { const a = limb(torso, 0.1 * s, 0.07, 0, 0.12, 0.02, 0.12, 0.018, porc); a.end.add(sphere(0.022, porc, 0, -0.01, 0)); a.a.rotation.z = 0.15 * s; return a; });
+  const key = joint(torso, 0, 0, -0.08);
+  key.add(box(0.015, 0.015, 0.08, gold, 0, 0, -0.04));
+  const w1 = mesh(new THREE.TorusGeometry(0.045, 0.012, 5, 10), gold, -0.045, 0, -0.08); w1.rotation.y = Math.PI / 2; key.add(w1);
+  const w2 = w1.clone(); w2.position.x = 0.045; key.add(w2);
+  root.userData = { kind: 'doll', body, torso, head, jaw, legs, arms, key, eyes, eyeMat, eyeH: 0, scareDist: 0.4 };
+  return bakeRig(root);
+}
+
+// ================= НЕЧТО: клубок щупалец в подвале =================
+export function makeThing(T) {
+  const flesh = Lm({ map: T.flesh }), flesh2 = Lm({ map: T.flesh, color: 0xc080c0 });
+  const eyeW = Lm({ color: 0xd8e0a0, emissive: 0x404010 }), pupil = Lm({ color: 0x000000 });
+  const root = new THREE.Group();
+  const bodyG = new THREE.IcosahedronGeometry(0.75, 2);
+  const pos = bodyG.attributes.position;
+  for (let i = 0; i < pos.count; i++) { const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i); const n = 1 + Math.sin(x * 7) * 0.08 + Math.cos(y * 9 + z * 5) * 0.07; pos.setXYZ(i, x * n, y * n * 0.85, z * n); }
+  bodyG.computeVertexNormals();
+  const core = mesh(bodyG, flesh, 0, 0.75, 0); core.userData.keep = true; root.add(core);
+  for (let i = 0; i < 6; i++) { const a = i * 1.1; root.add(sphere(0.18 + (i % 3) * 0.06, flesh2, Math.sin(a) * 0.45, 0.9 + Math.cos(a * 2) * 0.35, Math.cos(a) * 0.45)); }
+  // пасть с кольцом зубов
+  const jaw = joint(root, 0, 0.7, 0.62);
+  jaw.add(sphere(0.26, Lm({ color: 0x0a0004 }), 0, 0, 0, 1, 0.6, 0.35));
+  const toothM = C(0xd8d0a0);
+  for (let i = 0; i < 14; i++) { const a = i / 14 * Math.PI * 2; const t = cone(0.025, 0.09, toothM, 5); t.position.set(Math.cos(a) * 0.22, Math.sin(a) * 0.13, 0.04); t.rotation.z = a + Math.PI / 2; jaw.add(t); }
+  // много глаз
+  const eyes = [];
+  [[0.22, 1.18, 0.52, 0.09], [-0.28, 1.08, 0.55, 0.07], [0.0, 1.38, 0.38, 0.06], [0.45, 0.98, 0.38, 0.05], [-0.45, 1.25, 0.3, 0.05], [0.12, 1.0, 0.68, 0.04]].forEach(([x, y, z, r]) => {
+    const e = joint(root, x, y, z); e.add(sphere(r, eyeW, 0, 0, 0)); e.add(sphere(r * 0.45, pupil, 0, 0, r * 0.75, 1, 1.6, 0.5)); e.lookAt(x * 3, y, 5); eyes.push(e);
+  });
+  // щупальца
+  const tents = [];
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + 0.2;
+    let p = joint(root, Math.sin(a) * 0.55, 0.35, Math.cos(a) * 0.55); p.rotation.y = a;
+    const base = p, segs = [];
+    let r = 0.13;
+    for (let s = 0; s < 6; s++) {
+      const seg = joint(p, 0, 0, s === 0 ? 0 : 0.28);
+      const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, 0.2, 3, 8), s % 2 ? flesh2 : flesh); m.rotation.x = Math.PI / 2; m.position.z = 0.14; seg.add(m);
+      segs.push(seg); p = seg; r *= 0.8;
+    }
+    tents.push({ base, segs, phase: i * 0.8 });
+  }
+  const glow = new THREE.PointLight(0x9a40c0, 3, 6, 2); glow.position.y = 1.3; root.add(glow);
+  root.userData = { kind: 'thing', core, tents, eyes, jaw, eyeH: 1.0, scareDist: 1.35 };
+  return bakeRig(root);
+}
+
+// ---------- предметы ----------
+export const ITEMS = {
+  rustykey: { name: 'Ржавый ключ' }, screwdriver: { name: 'Отвёртка' },
+  gatekey: { name: 'Ключ от ворот' }, cutters: { name: 'Кусачки' },
+  oar: { name: 'Весло' }, boatkey: { name: 'Ключ от лодки' },
+  lever: { name: 'Рычаг' }, battery: { name: 'Аккумулятор' },
+  kiteframe: { name: 'Каркас змея' }, kitecloth: { name: 'Полотно змея' },
+  gear: { name: 'Шестерёнка' }, smallkey: { name: 'Маленький ключик' },
+  slingshot: { name: 'Рогатка', weapon: true }, flaregun: { name: 'Ракетница', weapon: true },
+  stones: { name: 'Камни (+4)', ammo: true },
+};
+export const PROPS = {
+  can: { name: 'Банка', breaks: false }, vase: { name: 'Ваза', breaks: true }, plate: { name: 'Тарелка', breaks: true },
+  pot: { name: 'Кастрюля', breaks: false }, bottle: { name: 'Бутылка', breaks: true }, stone: { name: 'Камень', breaks: false },
+};
+
+// низ модели ставим на y = 0, чтобы ничего не висело в воздухе и не проваливалось
+function ground(g) {
+  g.updateMatrixWorld(true);
+  const b = new THREE.Box3().setFromObject(g);
+  if (isFinite(b.min.y)) for (const c of g.children) c.position.y -= b.min.y;
+  return g;
+}
+
+export function makeItemMesh(id, glow) {
+  const g = new THREE.Group();
+  const em = glow ? 0x2a2410 : 0x000000;
+  const M = (c) => Lm({ color: c, emissive: em });
+  const cy = (rt, rb, h, m, seg = 10) => new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), m);
+  const add = (m, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) => { m.position.set(x, y, z); m.rotation.set(rx, ry, rz); g.add(m); return m; };
+  const key = (c, s, bow) => {
+    const m = M(c);
+    add(new THREE.Mesh(new THREE.TorusGeometry(0.045 * s, 0.012 * s, 6, 14), m), -0.06 * s, 0.012 * s, 0, Math.PI / 2);
+    add(cy(0.01 * s, 0.01 * s, 0.17 * s, m, 6), 0.05 * s, 0.012 * s, 0, 0, 0, Math.PI / 2);
+    add(box(0.012 * s, 0.012 * s, 0.045 * s, m), 0.11 * s, 0.012 * s, 0.02 * s);
+    add(box(0.012 * s, 0.012 * s, 0.03 * s, m), 0.08 * s, 0.012 * s, 0.015 * s);
+    if (bow) add(box(0.07, 0.04, 0.04, M(bow)), -0.13 * s, 0.02, 0);
+  };
+  switch (id) {
+    case 'rustykey': key(0x7a3a14, 1); break;
+    case 'gatekey': key(0xb89a40, 1.6); break;
+    case 'boatkey': key(0x9aa0a8, 1, 0x1a5ac0); break;
+    case 'smallkey': key(0xd0b050, 0.6, 0x9a1a2a); break;
+    case 'screwdriver': add(cy(0.028, 0.024, 0.13, M(0xd0a020)), 0, 0.028, 0, 0, 0, Math.PI / 2); add(cy(0.007, 0.007, 0.16, M(0xb0b0b0), 6), 0.14, 0.028, 0, 0, 0, Math.PI / 2); add(box(0.01, 0.004, 0.02, M(0xb0b0b0)), 0.225, 0.028, 0); break;
+    case 'cutters': for (const s of [-1, 1]) { add(box(0.28, 0.028, 0.03, M(0xb02020)), -0.06, 0.02, 0.035 * s, 0, 0.12 * s); add(box(0.12, 0.03, 0.035, M(0x6a6a6a)), 0.14, 0.02, 0.012 * s, 0, -0.1 * s); } add(cy(0.02, 0.02, 0.05, M(0x444444), 8), 0.08, 0.02, 0, Math.PI / 2); break;
+    case 'oar': add(cy(0.022, 0.022, 1.2, M(0x7a5a30)), 0, 0.03, 0, 0, 0, Math.PI / 2); add(box(0.36, 0.025, 0.17, M(0x7a5a30)), 0.75, 0.03, 0); add(box(0.12, 0.05, 0.05, M(0x2a2a2a)), -0.55, 0.03, 0); break;
+    case 'lever': add(cy(0.022, 0.022, 0.6, M(0x606468)), 0, 0.05, 0, 0, 0, Math.PI / 2); add(new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), M(0xc02020)), 0.32, 0.05, 0); add(box(0.08, 0.08, 0.08, M(0x404448)), -0.3, 0.05, 0); break;
+    case 'battery': add(box(0.3, 0.2, 0.18, M(0x1a1a1a)), 0, 0.1, 0); add(box(0.31, 0.04, 0.19, M(0x3a3a3a)), 0, 0.18, 0); add(cy(0.025, 0.025, 0.04, M(0xc02020)), -0.08, 0.22, 0); add(cy(0.025, 0.025, 0.04, M(0x2040c0)), 0.08, 0.22, 0); add(box(0.2, 0.05, 0.002, M(0xd0c040)), 0, 0.1, 0.091); break;
+    case 'kiteframe': add(box(0.9, 0.022, 0.022, M(0x9a7a50)), 0, 0.012, 0); add(box(0.022, 0.022, 0.6, M(0x9a7a50)), 0.1, 0.012, 0); add(new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.006, 4, 8), M(0xd0c8b0)), -0.45, 0.012, 0, Math.PI / 2); break;
+    case 'kitecloth': add(box(0.36, 0.06, 0.26, M(0xc03030)), 0, 0.03, 0); add(box(0.36, 0.03, 0.12, M(0xd8b030)), 0, 0.075, 0.02); add(box(0.04, 0.09, 0.27, M(0x2a2a2a)), 0.12, 0.045, 0); break;
+    case 'gear': { const m = M(0x8a7a50); add(cy(0.09, 0.09, 0.03, m, 16), 0, 0.015, 0); for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; add(box(0.035, 0.03, 0.035, m), Math.cos(a) * 0.1, 0.015, Math.sin(a) * 0.1, 0, -a); } add(cy(0.025, 0.025, 0.035, M(0x2a2a2a), 8), 0, 0.017, 0); break; }
+    case 'slingshot': { const wd = M(0x6a4422); add(cy(0.018, 0.02, 0.16, wd, 6), 0, 0.08, 0); for (const s of [-1, 1]) add(cy(0.014, 0.016, 0.12, wd, 6), 0.035 * s, 0.2, 0, 0, 0, -0.35 * s); add(box(0.1, 0.006, 0.006, M(0x8a2a1a)), 0, 0.25, 0.0); add(box(0.025, 0.02, 0.012, M(0x3a2a1a)), 0, 0.25, 0.01); break; }
+    case 'flaregun': { const o = M(0xd05010); add(box(0.24, 0.07, 0.06, o), 0.06, 0.13, 0); add(cy(0.03, 0.03, 0.2, o, 10), 0.12, 0.13, 0, 0, 0, Math.PI / 2); add(box(0.06, 0.13, 0.05, M(0x2a2a2a)), -0.04, 0.065, 0, 0, 0, 0.25); add(box(0.02, 0.04, 0.02, M(0x2a2a2a)), 0.02, 0.07, 0); break; }
+    case 'stones': for (let i = 0; i < 4; i++) add(new THREE.Mesh(new THREE.DodecahedronGeometry(0.035 + i * 0.004, 0), M(0x6a6660)), (i % 2) * 0.07 - 0.03, 0.03, (i >> 1) * 0.07 - 0.03); break;
+    case 'stone': add(new THREE.Mesh(new THREE.DodecahedronGeometry(0.035, 0), M(0x6a6660)), 0, 0.03, 0); break;
+    case 'flare': add(cy(0.02, 0.02, 0.12, Lm({ color: 0xff6020, emissive: 0xff3000 }), 8), 0, 0.02, 0, 0, 0, Math.PI / 2); break;
+    case 'can': add(cy(0.055, 0.055, 0.14, M(0x7a7a70), 14), 0, 0.07, 0); add(cy(0.056, 0.056, 0.06, M(0x8a2a1a), 14), 0, 0.07, 0); break;
+    case 'vase': { const v = lathe([[0, 0], [0.06, 0], [0.1, 0.08], [0.09, 0.18], [0.04, 0.26], [0.055, 0.32], [0.05, 0.33]], M(0x2a4a7a), 16); v.material.side = THREE.DoubleSide; g.add(v); break; }
+    case 'plate': { const p = lathe([[0, 0.0], [0.08, 0.0], [0.13, 0.025], [0.12, 0.028]], M(0xd8d0c0), 18); p.material.side = THREE.DoubleSide; g.add(p); break; }
+    case 'pot': add(cy(0.13, 0.12, 0.16, M(0x4a4a4e), 16), 0, 0.08, 0); add(box(0.4, 0.02, 0.03, M(0x2a2a2a)), 0, 0.14, 0); add(cy(0.135, 0.135, 0.015, M(0x3a3a3e), 16), 0, 0.165, 0); break;
+    case 'bottle': { const b = lathe([[0, 0], [0.045, 0], [0.045, 0.16], [0.02, 0.21], [0.016, 0.28], [0.019, 0.29], [0, 0.29]], Lm({ color: 0x1f4a20, emissive: em, transparent: true, opacity: 0.9 }), 12); g.add(b); break; }
+  }
+  return bakeRig(ground(g));
+}
+
+// ---------- транспорт и ворота ----------
+export function makeBoat(T) {
+  const wood = Lm({ map: T.wood, color: 0xa08060 }), dark = C(0x22160c);
+  const g = new THREE.Group();
+  const hull = lathe([[0, -0.25], [0.45, -0.2], [0.55, 0.1], [0.58, 0.3]], wood, 14); hull.scale.set(1, 1, 2.4); hull.material.side = THREE.DoubleSide; g.add(hull);
+  g.add(box(1.0, 0.05, 0.3, dark, 0, 0.18, 0.3)); g.add(box(1.0, 0.05, 0.3, dark, 0, 0.18, -0.5));
+  const motor = box(0.25, 0.4, 0.3, Lm({ map: T.metal }), 0, 0.4, 1.35); g.add(motor);
+  const lock = box(0.12, 0.12, 0.06, C(0x9aa0a8), 0, 0.45, 1.15); g.add(lock);
+  const oar = makeItemMesh('oar'); oar.position.set(0.25, 0.25, -0.1); oar.rotation.y = Math.PI / 2; oar.visible = false; g.add(oar);
+  const chain = mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.5, 5), C(0x606060), 0.9, 0.2, 0); chain.rotation.z = Math.PI / 2; g.add(chain);
+  g.userData = { oar, lock, chain };
+  return g;
+}
+export function makeDraisine(T) {
+  const metal = Lm({ map: T.metal }), wood = Lm({ map: T.wood, color: 0xa07a50 });
+  const g = new THREE.Group();
+  g.add(box(1.5, 0.12, 1.8, wood, 0, 0.45, 0));
+  for (const [x, z] of [[-0.5, -0.6], [0.5, -0.6], [-0.5, 0.6], [0.5, 0.6]]) { const w = mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.07, 14), metal, x, 0.22, z); w.rotation.z = Math.PI / 2; g.add(w); }
+  g.add(box(0.15, 0.7, 0.15, metal, 0, 0.85, 0));
+  const lever = joint(g, 0, 1.2, 0); lever.add(box(1.3, 0.05, 0.05, C(0x8a2020))); lever.add(box(0.1, 0.1, 0.1, metal)); lever.visible = false;
+  const batt = makeItemMesh('battery'); batt.position.set(0.45, 0.51, 0.5); batt.visible = false; g.add(batt);
+  g.add(box(0.5, 0.3, 0.4, metal, -0.4, 0.66, 0.5));
+  g.userData = { lever, batt };
+  return g;
+}
+export function makeGate() {
+  const iron = C(0x26282a), rust = C(0x5a3a20);
+  const g = new THREE.Group();
+  const leaf = joint(g, -1, 0, 0);
+  for (let i = 0; i <= 8; i++) { leaf.add(box(0.04, 2.2, 0.04, iron, i * 0.25, 1.1, 0)); leaf.add(mesh(new THREE.ConeGeometry(0.04, 0.12, 4), iron, i * 0.25, 2.25, 0)); }
+  leaf.add(box(2.0, 0.07, 0.05, iron, 1, 2.05, 0)); leaf.add(box(2.0, 0.07, 0.05, iron, 1, 0.3, 0)); leaf.add(box(2.0, 0.07, 0.05, iron, 1, 1.2, 0));
+  const chain = joint(g, 0.95, 1.2, 0.08);
+  for (let i = 0; i < 6; i++) { const l = mesh(new THREE.TorusGeometry(0.045, 0.013, 5, 8), rust, 0, -0.075 * i + 0.18, 0); l.rotation.y = i % 2 ? Math.PI / 2 : 0; chain.add(l); }
+  const padlock = joint(g, 0.95, 0.82, 0.1); padlock.add(box(0.14, 0.13, 0.07, C(0x9a8030, 0x201500))); padlock.add(mesh(new THREE.TorusGeometry(0.045, 0.012, 5, 10, Math.PI), C(0x8a8a8a), 0, 0.065, 0));
+  g.userData = { leaf, chain, padlock };
+  return g;
+}
+export function makeKiteStand(T) {
+  const g = new THREE.Group();
+  const wood = Lm({ map: T.wood, color: 0xa08060 });
+  g.add(box(0.08, 1.0, 0.08, wood, 0, 0.5, 0)); g.add(box(0.6, 0.06, 0.06, wood, 0, 1.0, 0));
+  const frame = makeItemMesh('kiteframe'); frame.position.set(0, 1.4, 0); frame.rotation.x = Math.PI / 2 - 0.3; frame.visible = false; g.add(frame);
+  const sail = new THREE.Mesh(new THREE.BufferGeometry(), Lm({ color: 0xc03030, side: THREE.DoubleSide }));
+  const v = new Float32Array([0, 0.3, 0, -0.45, 0, 0, 0, -0.6, 0, 0, 0.3, 0, 0, -0.6, 0, 0.45, 0, 0]);
+  sail.geometry.setAttribute('position', new THREE.BufferAttribute(v, 3)); sail.geometry.computeVertexNormals();
+  sail.position.set(0, 1.4, 0); sail.rotation.x = -0.3; sail.visible = false; g.add(sail);
+  g.add(mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.12, 12), C(0xd8c8a0), 0.25, 1.06, 0).rotateZ(Math.PI / 2));
+  g.userData = { frame, sail };
+  return g;
+}
+
+// Склейка деталей внутри каждого сустава: тот же вид, но в разы меньше вызовов отрисовки
+export function bakeRig(root) {
+  const nodes = []; root.traverse(o => nodes.push(o));
+  for (const n of nodes) {
+    const groups = new Map();
+    for (const c of n.children) if (c.isMesh && c.children.length === 0 && !c.userData.keep && !Array.isArray(c.material)) { const k = c.material.uuid; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(c); }
+    for (const list of groups.values()) {
+      if (list.length < 2) continue;
+      const geos = list.map(c => {
+        c.updateMatrix();
+        const g = c.geometry.index ? c.geometry.toNonIndexed() : c.geometry.clone();
+        for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k);
+        if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+        g.applyMatrix4(c.matrix); return g;
+      });
+      const merged = mergeGeometries(geos); if (!merged) continue;
+      merged.computeBoundingSphere();
+      const m = new THREE.Mesh(merged, list[0].material); n.add(m); list.forEach(c => n.remove(c));
+    }
+  }
+  return root;
+}
+
+// ================= ИГРОК (для сетевой игры): подросток в толстовке с фонариком =================
+export function makeKid(T, color, name) {
+  const skin = Lm({ map: T.skin('#c8a488', 81) }), hood = Lm({ map: T.dress('#' + color.toString(16).padStart(6, '0'), 82) });
+  const jeans = C(0x2a3448), shoe = C(0xe0dcd0), hairM = C(0x3a2618), dark = C(0x101010), pack = C(0x3a3a2a);
+  const root = new THREE.Group();
+  const hips = joint(root, 0, 0.82, 0);
+  const legs = [-1, 1].map(s => { const l = limb(hips, 0.09 * s, 0, 0, 0.38, 0.06, 0.38, 0.05, jeans); l.end.add(box(0.1, 0.07, 0.24, shoe, 0, -0.03, 0.05)); return l; });
+  const spine = joint(hips, 0, 0, 0);
+  spine.add(lathe([[0.15, -0.02], [0.18, 0.15], [0.19, 0.35], [0.14, 0.48], [0.06, 0.52]], hood));
+  spine.add(box(0.28, 0.32, 0.14, pack, 0, 0.28, -0.2));
+  const hoodBack = sphere(0.12, hood, 0, 0.5, -0.1, 1.2, 0.7, 1); spine.add(hoodBack);
+  const neck = joint(spine, 0, 0.5, 0); neck.add(capsule(0.04, 0.05, skin)); neck.children[0].position.y = 0.04;
+  const head = joint(neck, 0, 0.08, 0);
+  head.add(sphere(0.11, skin, 0, 0.1, 0, 0.95, 1.05, 1));
+  head.add(mesh(new THREE.SphereGeometry(0.118, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), hairM, 0, 0.12, -0.01));
+  for (const s of [-1, 1]) { head.add(sphere(0.016, C(0xf0f0f0), 0.04 * s, 0.11, 0.095)); head.add(sphere(0.009, dark, 0.04 * s, 0.11, 0.108)); }
+  head.add(box(0.05, 0.008, 0.01, C(0x6a3030), 0, 0.05, 0.105));
+  const arms = [-1, 1].map(s => { const a = limb(spine, 0.21 * s, 0.44, 0, 0.28, 0.05, 0.26, 0.045, hood); a.end.add(sphere(0.04, skin, 0, -0.02, 0)); return a; });
+  // фонарик в правой руке и световой конус
+  const torch = joint(arms[1].end, 0, -0.06, 0.04); torch.rotation.x = -Math.PI / 2;
+  torch.add(mesh(new THREE.CylinderGeometry(0.022, 0.018, 0.16, 8), C(0x202020), 0, 0.06, 0));
+  const lens = mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.01, 8), new THREE.MeshBasicMaterial({ color: 0x555555 }), 0, 0.145, 0); torch.add(lens);
+  const beam = mesh(new THREE.ConeGeometry(0.9, 4, 16, 1, true), new THREE.MeshBasicMaterial({ color: 0xfff0c0, transparent: true, opacity: 0.08, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }), 0, 2.15, 0);
+  beam.rotation.x = Math.PI; beam.visible = false; beam.userData.keep = true; lens.userData.keep = true; torch.add(beam);
+  // имя над головой
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const g = c.getContext('2d'); g.font = '600 34px Osw, Arial'; g.textAlign = 'center'; g.fillStyle = 'rgba(0,0,0,0.55)'; g.fillRect(0, 8, 256, 48);
+  g.fillStyle = '#' + color.toString(16).padStart(6, '0'); g.fillRect(0, 8, 6, 48); g.fillStyle = '#ece2d0'; g.fillText(name.slice(0, 14), 128, 44);
+  const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true }));
+  tag.scale.set(0.9, 0.22, 1); tag.position.y = 1.95; tag.renderOrder = 5; root.add(tag);
+  const hand = joint(arms[0].end, 0, -0.05, 0.05);
+  root.userData = { kind: 'kid', hips, spine, neck, head, legs, arms, beam, lens, hand, tag };
+  return bakeRig(root);
+}

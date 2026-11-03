@@ -1,0 +1,1073 @@
+import * as THREE from 'three';
+import { CS, W, H, FLOOR_Y, RAMPS, buildMaps, rampAt, rampY, insideHouse, makeTextures, buildWorld, buildFurniture, buildLights, box } from './world.js';
+import { makeHostess, makeWatchman, makeDoll, makeThing, ITEMS, PROPS, makeItemMesh, makeBoat, makeDraisine, makeGate, makeKiteStand } from './models.js';
+import { ensureAudio, setListener, sfx } from './audio.js';
+
+// ---------- сложности ----------
+const DIFFS = {
+  easy: { name: 'Лёгкая', days: 6, speed: 0.8, hear: 0.75, sense: 1.4, random: false, light: 1.15, stamina: false, glow: true, thingIdle: 7, sleep: [45, 60], battery: false },
+  normal: { name: 'Нормальная', days: 5, speed: 1.0, hear: 1.0, sense: 1.8, random: false, light: 1.0, stamina: false, glow: true, thingIdle: 5, sleep: [35, 50], battery: false },
+  hard: { name: 'Сложная', days: 4, speed: 1.15, hear: 1.25, sense: 2.2, random: true, light: 0.8, stamina: true, glow: false, thingIdle: 4, sleep: [25, 40], battery: false },
+  nightmare: { name: 'Кошмар', days: 3, speed: 1.3, hear: 1.5, sense: 2.6, random: true, light: 0.6, stamina: true, glow: false, thingIdle: 3, sleep: [18, 28], battery: true },
+};
+const ESCAPES = {
+  gate: { name: 'Ворота', parts: ['cutters', 'gatekey'], how: 'через ворота' },
+  boat: { name: 'Лодка', parts: ['oar', 'boatkey'], how: 'на лодке по подземной реке' },
+  rail: { name: 'Дрезина', parts: ['lever', 'battery'], how: 'на дрезине' },
+  kite: { name: 'Воздушный змей', parts: ['kiteframe', 'kitecloth'], how: 'на воздушном змее' },
+};
+const LOCKS = { '1,15,10': 'rustykey', '2,9,3': 'screwdriver' };
+const SPAWNS = [
+  [2, 3, 6], [2, 5, 5], [2, 13, 5], [2, 16, 6], [2, 16, 13], [2, 15, 12], [2, 5, 13], [2, 3, 8], [2, 8, 5], [2, 12, 13],
+  [1, 4, 5], [1, 3, 4], [1, 14, 5], [1, 15, 6], [1, 10, 4], [1, 6, 13], [1, 4, 11], [1, 16, 8], [1, 8, 11], [1, 18, 5], [1, 12, 1], [1, 2, 16],
+  [0, 13, 3], [0, 8, 3], [0, 10, 4], [0, 5, 9], [0, 8, 8], [0, 4, 11], [0, 6, 15],
+];
+const DEFAULT_ITEMS = {
+  rustykey: [2, 3, 6], screwdriver: [1, 4, 5], gatekey: [0, 13, 3], cutters: [1, 18, 5], oar: [2, 13, 5],
+  boatkey: [1, 6, 13], lever: [0, 5, 9], battery: [2, 16, 13], kiteframe: [0, 8, 3], kitecloth: [1, 14, 5],
+};
+const PROP_SPOTS = [
+  [1, 3, 4, 'pot'], [1, 4, 5, 'plate'], [1, 14, 5, 'vase'], [1, 9, 8, 'can'], [1, 12, 8, 'bottle'], [1, 6, 13, 'can'], [1, 10, 5, 'vase'],
+  [2, 3, 6, 'vase'], [2, 16, 6, 'plate'], [2, 8, 8, 'can'], [2, 14, 9, 'bottle'], [2, 12, 12, 'can'], [2, 4, 5, 'plate'],
+  [0, 8, 3, 'can'], [0, 9, 15, 'bottle'], [0, 6, 9, 'pot'],
+];
+const HOST_WP = [[2, 4, 5], [2, 9, 8], [2, 14, 5], [2, 15, 12], [2, 12, 12], [2, 5, 12], [1, 9, 8], [1, 4, 5], [1, 14, 5], [1, 5, 12], [1, 10, 5], [1, 9, 1], [1, 12, 15], [1, 4, 8], [1, 15, 8]];
+const WATCH_WP = [[1, 9, 8], [1, 15, 8], [1, 4, 8], [1, 10, 5], [1, 14, 5], [1, 4, 5], [1, 9, 2], [1, 18, 8], [1, 18, 15], [1, 3, 15], [2, 9, 8], [2, 14, 5], [2, 4, 8]];
+const CHAIR = [1, 5, 12];
+const THING_WP = [[0, 13, 15], [0, 9, 15], [0, 11, 10], [0, 7, 12], [0, 4, 13], [0, 11, 4], [0, 6, 9]];
+const SPAWN_PLAYER = { f: 2, x: 4, z: 12, yaw: -Math.PI / 2 };
+
+const $ = (id) => document.getElementById(id);
+const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const cc = (c) => (c + 0.5) * CS;
+const cellOf = (v) => [Math.floor(v.x / CS), Math.floor(v.z / CS)];
+const rand = (a, b) => a + Math.random() * (b - a);
+const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+const QS = new URLSearchParams(location.search);
+
+// ---------- рендер ----------
+const canvas = $('c');
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: QS.has('shot') }); }
+catch (e) { $('nogl').classList.remove('hidden'); throw e; }
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isTouch ? 1.5 : 1.25));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x06070c);
+scene.fog = new THREE.FogExp2(0x06070c, 0.055);
+const camera = new THREE.PerspectiveCamera(72, 1, 0.05, 120);
+camera.rotation.order = 'YXZ';
+scene.add(camera);
+function resize() { const w = window.innerWidth, h = window.innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+window.addEventListener('resize', resize); resize();
+
+const T = makeTextures();
+const baseMaps = buildMaps();
+const world = buildWorld(scene, baseMaps, T);
+const furn = buildFurniture(scene, baseMaps, T);
+const lamps = buildLights(scene, 1);
+const hemi = scene.children.find(o => o.isHemisphereLight), moon = scene.children.find(o => o.isDirectionalLight);
+const hemiBase = hemi.intensity, moonBase = moon.intensity;
+
+// фонарик игрока
+const flash = new THREE.SpotLight(0xfff0d0, 0, 22, 0.42, 0.55, 1.3);
+flash.position.set(0.15, -0.1, 0); camera.add(flash);
+const flashT = new THREE.Object3D(); flashT.position.set(0, 0, -5); camera.add(flashT); flash.target = flashT;
+
+// ---------- состояние ----------
+let maps, D, diffKey = 'normal';
+const G = { mode: 'menu', day: 1, time: 0, splits: [], esc: null, doors: new Map(), objects: [], dyn: null, toastT: 0, heartT: 0, prevMode: null };
+const P = { f: 2, pos: V(), yaw: 0, pitch: 0, crouch: false, sprint: false, held: null, hidden: null, stamina: 100, tired: false, light: false, battery: 100, stepAcc: 0, lastCell: '', idle: 0, noiseT: -99, eye: 1.6, moving: 0, vel: V() };
+let hostess, watchman, doll, thing, gateM, boatM, draisineM, kiteM, heldView = null;
+
+try { const s = localStorage.getItem('hushwood.diff'); if (s && DIFFS[s]) diffKey = s; } catch (e) { }
+
+// ---------- карта: проверки ----------
+const cell = (f, x, z) => (x < 0 || z < 0 || x >= W || z >= H || f < 0 || f > 2) ? null : maps[f][z][x];
+const doorAt = (f, x, z) => G.doors.get(f + ',' + x + ',' + z);
+function solidPlayer(f, x, z) {
+  const ch = cell(f, x, z);
+  if (ch === null) return true;
+  if ('#fWBTwYR '.includes(ch)) return true;
+  if (ch === 'G') return !G.esc.gateOpen;
+  if (ch === 'D' || ch === 'L') { const d = doorAt(f, x, z); return !d || d.t < 0.85; }
+  return false;
+}
+function solidSight(f, x, z) {
+  const ch = cell(f, x, z);
+  if (ch === null) return true;
+  if ('#W Y'.includes(ch)) return true;
+  if (ch === 'D' || ch === 'L') { const d = doorAt(f, x, z); return !d || d.t < 0.5; }
+  return false;
+}
+function heightAt(f, x, z) {
+  const cx = Math.floor(x / CS), cz = Math.floor(z / CS);
+  if (cell(f, cx, cz) === 'S') { const r = rampAt(cx, cz); if (r) return rampY(r, x, z); }
+  return FLOOR_Y[f];
+}
+function floorFromY(f, x, z, y) {
+  const cx = Math.floor(x / CS), cz = Math.floor(z / CS);
+  if (cell(f, cx, cz) !== 'S') return f;
+  const r = rampAt(cx, cz); if (!r) return f;
+  return y > (FLOOR_Y[r.low] + FLOOR_Y[r.high]) / 2 ? r.high : r.low;
+}
+function los(f, a, b) {
+  const dx = b.x - a.x, dz = b.z - a.z, d = Math.hypot(dx, dz);
+  const n = Math.ceil(d / 0.25);
+  const [ax, az] = cellOf(a), [bx, bz] = cellOf(b);
+  for (let i = 1; i < n; i++) {
+    const x = a.x + dx * i / n, z = a.z + dz * i / n;
+    const cx = Math.floor(x / CS), cz = Math.floor(z / CS);
+    if ((cx === ax && cz === az) || (cx === bx && cz === bz)) continue;
+    if (solidSight(f, cx, cz)) return false;
+  }
+  return true;
+}
+
+// ---------- поиск пути ----------
+const NID = (f, x, z) => f * W * H + z * W + x;
+const NF = (id) => Math.floor(id / (W * H)), NZ = (id) => Math.floor((id % (W * H)) / W), NX = (id) => id % W;
+function bfs(from, goal, allow) {
+  if (from === goal) return [];
+  const prev = new Int32Array(3 * W * H).fill(-2); prev[from] = -1;
+  const q = [from];
+  for (let qi = 0; qi < q.length; qi++) {
+    const id = q[qi]; if (id === goal) break;
+    const f = NF(id), x = NX(id), z = NZ(id);
+    const nbs = [[f, x + 1, z], [f, x - 1, z], [f, x, z + 1], [f, x, z - 1]];
+    if (cell(f, x, z) === 'S') { const r = rampAt(x, z); if (r) nbs.push([f === r.low ? r.high : r.low, x, z]); }
+    for (const [nf, nx, nz] of nbs) {
+      if (nx < 0 || nz < 0 || nx >= W || nz >= H) continue;
+      const nid = NID(nf, nx, nz);
+      if (prev[nid] !== -2 || !allow(nf, nx, nz, cell(nf, nx, nz))) continue;
+      prev[nid] = id; q.push(nid);
+    }
+  }
+  if (prev[goal] === -2) return null;
+  const path = []; for (let c = goal; c !== from; c = prev[c]) path.push(c);
+  return path.reverse();
+}
+function nearestAllowed(f, x, z, allow) {
+  if (allow(f, x, z, cell(f, x, z))) return NID(f, x, z);
+  for (let r = 1; r < 4; r++) for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+    const nx = x + dx, nz = z + dz; if (allow(f, nx, nz, cell(f, nx, nz))) return NID(f, nx, nz);
+  }
+  return null;
+}
+const allowUpper = (f, x, z, ch) => f >= 1 && ch !== null && '.cDgrS'.includes(ch) && !(f === 1 && z === 0);
+const allowThing = (f, x, z, ch) => f === 0 && ch === '.';
+
+// ---------- враги: общий ходок ----------
+class Walker {
+  constructor(mesh, allow) { this.mesh = mesh; this.allow = allow; this.f = 1; this.pos = V(); this.yaw = 0; this.path = []; this.state = 'idle'; this.timer = 0; this.stun = 0; this.anim = 0; this.repath = 0; this.witness = false; this.wait = 0; this.lastSeen = -99; this.known = null; this.moving = false; }
+  place(f, x, z) { this.f = f; this.pos.set(cc(x), heightAt(f, cc(x), cc(z)), cc(z)); this.path = []; this.sync(); }
+  node() { const [x, z] = cellOf(this.pos); return NID(this.f, x, z); }
+  goTo(id) { if (id === null || id === undefined) { this.path = []; return false; } const p = bfs(this.node(), id, this.allow); this.path = p || []; return !!p; }
+  goToCell(f, x, z) { return this.goTo(nearestAllowed(f, x, z, this.allow)); }
+  step(speed, dt) {
+    this.moving = false;
+    if (this.wait > 0) { this.wait -= dt; return false; }
+    if (!this.path.length) return true;
+    const id = this.path[0], nf = NF(id), nx = NX(id), nz = NZ(id);
+    if (nf !== this.f && Math.floor(this.pos.x / CS) === nx && Math.floor(this.pos.z / CS) === nz) { this.f = nf; this.path.shift(); return false; }
+    const ch = cell(nf, nx, nz);
+    if (ch === 'D' || ch === 'L') { const d = doorAt(nf, nx, nz); if (d && !d.open) { setDoor(d, true); this.wait = 0.45; return false; } }
+    const tx = cc(nx), tz = cc(nz);
+    const dx = tx - this.pos.x, dz = tz - this.pos.z, dist = Math.hypot(dx, dz);
+    const mv = speed * dt;
+    if (dist <= mv + 0.02) { this.pos.x = tx; this.pos.z = tz; this.f = nf; this.path.shift(); }
+    else { this.pos.x += dx / dist * mv; this.pos.z += dz / dist * mv; const ty = Math.atan2(dx, dz); this.yaw = lerpAngle(this.yaw, ty, Math.min(1, dt * 8)); }
+    this.f = floorFromY(this.f, this.pos.x, this.pos.z, heightAt(this.f, this.pos.x, this.pos.z));
+    this.pos.y = heightAt(this.f, this.pos.x, this.pos.z);
+    this.moving = true; this.anim += mv * 3.2;
+    return !this.path.length;
+  }
+  sync() { this.mesh.position.copy(this.pos); this.mesh.rotation.y = this.yaw; }
+  distP() { const dy = Math.abs((this.pos.y) - (P.pos.y)); return Math.hypot(this.pos.x - P.pos.x, this.pos.z - P.pos.z) + (dy > 1.4 ? dy * 2 : 0); }
+}
+function lerpAngle(a, b, t) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; }
+const now = () => G.time;
+
+// ---------- шум ----------
+function noise(f, pos, radius, fromPlayer) {
+  if (radius <= 0) return;
+  hostessHear(f, pos, radius, fromPlayer);
+  watchmanHear(f, pos, radius);
+}
+
+// ---------- Хозяйка ----------
+function hostessHear(f, pos, radius, fromPlayer) {
+  const h = hostess; if (h.stun > 0) return;
+  const d = Math.hypot(h.pos.x - pos.x, h.pos.z - pos.z) + Math.abs(h.pos.y - pos.y) * 1.6;
+  if (d > radius * D.hear) return;
+  const [x, z] = cellOf(pos);
+  if (h.state === 'chase') { if (fromPlayer) { h.known = { f, x, z }; h.lastSeen = now(); } return; }
+  h.state = 'investigate'; h.goToCell(f, x, z); h.known = { f, x, z };
+}
+function updateHostess(dt) {
+  const h = hostess, U = h.mesh.userData;
+  if (h.stun > 0) { h.stun -= dt; U.upper.rotation.z = Math.sin(now() * 9) * 0.25; U.head.rotation.x = 0.6; h.sync(); return; }
+  U.upper.rotation.z = 0; U.head.rotation.x = 0;
+  const pd = h.distP(), sp = D.speed;
+  if (h.state !== 'chase' && !P.hidden && pd < D.sense) startChase(h);
+  switch (h.state) {
+    case 'idle': case 'patrol':
+      if (!h.path.length) { const w = HOST_WP[(Math.random() * HOST_WP.length) | 0]; h.goToCell(...w); h.state = 'patrol'; }
+      if (h.step(1.35 * sp, dt)) { h.state = 'pause'; h.timer = rand(1.5, 3.5); }
+      break;
+    case 'pause': h.timer -= dt; U.head.rotation.y = Math.sin(now() * 1.5) * 0.6; if (h.timer <= 0) { U.head.rotation.y = 0; h.state = 'patrol'; } break;
+    case 'investigate':
+      if (h.step(2.1 * sp, dt)) { h.state = 'listen'; h.timer = 2.6; }
+      break;
+    case 'listen': h.timer -= dt; U.head.rotation.y = Math.sin(now() * 3) * 0.7; if (h.timer <= 0) { U.head.rotation.y = 0; h.state = 'patrol'; } break;
+    case 'chase': {
+      if (!P.hidden && (pd < D.sense * 3 || (now() - P.noiseT < 1.2 && pd < 22))) { const [x, z] = cellOf(P.pos); h.known = { f: P.f, x, z }; h.lastSeen = now(); }
+      h.repath -= dt;
+      if (h.repath <= 0 && h.known) {
+        h.repath = 0.35;
+        if (P.hidden && h.witness) { const hd = P.hidden; h.goToCell(hd.f, hd.x + hd.face[0], hd.z + hd.face[1]); }
+        else h.goToCell(h.known.f, h.known.x, h.known.z);
+      }
+      h.step(3.25 * sp, dt);
+      if (now() - h.lastSeen > (P.hidden && h.witness ? 6 : 3.2)) { h.state = 'listen'; h.timer = 3; h.witness = false; }
+      break;
+    }
+  }
+  if (h.state === 'chase' || h.state === 'investigate') {
+    if (P.hidden && h.witness && pd < 1.7) caught(h);
+    else if (!P.hidden && pd < 1.05) caught(h);
+  } else if (!P.hidden && pd < 0.9) caught(h);
+  // колокольчик
+  h.bell = (h.bell || 0) - dt;
+  if (h.moving && h.bell <= 0) { sfx.bell(V(h.pos.x, h.pos.y + 1.4, h.pos.z)); h.bell = h.state === 'chase' ? 0.32 : 0.75; }
+  animWalk(U, h, 0.5);
+  h.sync();
+}
+function startChase(e) {
+  if (e.state !== 'chase') { e.state = 'chase'; e.repath = 0; }
+  const [x, z] = cellOf(P.pos); e.known = { f: P.f, x, z }; e.lastSeen = now();
+}
+function animWalk(U, e, amp) {
+  const s = e.moving ? Math.sin(e.anim) : 0;
+  U.legL.rotation.x = s * amp; U.legR.rotation.x = -s * amp;
+  U.armL.rotation.x = -s * amp * 0.8;
+  if (e !== watchman) U.armR.rotation.x = s * amp * 0.8;
+}
+
+// ---------- Сторож ----------
+function watchmanHear(f, pos, radius) {
+  const w = watchman; if (w.stun > 0) return;
+  const d = Math.hypot(w.pos.x - pos.x, w.pos.z - pos.z) + Math.abs(w.pos.y - pos.y) * 1.6;
+  if (w.state === 'sleep' && d < radius * 0.6 * D.hear) { wakeWatch(); }
+  else if ((w.state === 'walk' || w.state === 'return') && radius >= 9 && d < radius * D.hear) { const [x, z] = cellOf(pos); w.goToCell(f, x, z); w.state = 'walk'; }
+}
+function wakeWatch() { const w = watchman; w.state = 'walk'; w.timer = rand(45, 70); w.path = []; w.mesh.userData.body.position.y = 0.5; }
+function watchSees() {
+  const w = watchman; if (P.hidden) return false;
+  if (Math.abs(w.pos.y - P.pos.y) > 1.6) return false;
+  const dx = P.pos.x - w.pos.x, dz = P.pos.z - w.pos.z, d = Math.hypot(dx, dz);
+  const range = P.light ? 16 : P.crouch ? 5.5 : 9;
+  if (d > range) return false;
+  const fx = Math.sin(w.yaw), fz = Math.cos(w.yaw);
+  const cos = (dx * fx + dz * fz) / (d || 1);
+  const lim = P.light ? Math.cos(1.3) : Math.cos(0.62);
+  if (d > 1.4 && cos < lim) return false;
+  return los(w.f, w.pos, P.pos);
+}
+function updateWatchman(dt) {
+  const w = watchman, U = w.mesh.userData;
+  if (w.stun > 0) { w.stun -= dt; U.body.rotation.z = Math.sin(now() * 7) * 0.2; U.spot.intensity = 6; w.sync(); return; }
+  U.body.rotation.z = 0;
+  const pd = w.distP(), sp = D.speed;
+  if (w.state !== 'sleep' && w.state !== 'chase' && watchSees()) startChase(w);
+  switch (w.state) {
+    case 'sleep':
+      w.timer -= dt; U.body.position.y = 0.05; U.head.rotation.x = 0.55; U.spot.intensity = 8; U.halo.intensity = 1.5;
+      U.legL.rotation.x = U.legR.rotation.x = -1.4;
+      w.snore = (w.snore || 0) - dt; if (w.snore <= 0) { sfx.snore(w.pos); w.snore = 3.2; }
+      if (w.timer <= 0) wakeWatch();
+      break;
+    case 'walk':
+      U.head.rotation.x = 0.15; U.spot.intensity = 40 * D.light; U.halo.intensity = 3;
+      w.timer -= dt;
+      if (!w.path.length) w.goToCell(...WATCH_WP[(Math.random() * WATCH_WP.length) | 0]);
+      w.step(1.25 * sp, dt);
+      if (w.timer <= 0) { w.state = 'return'; w.goToCell(...CHAIR); }
+      break;
+    case 'return':
+      if (w.step(1.4 * sp, dt)) { w.state = 'sleep'; w.timer = rand(...D.sleep); w.yaw = Math.PI; }
+      break;
+    case 'chase': {
+      U.head.rotation.x = 0;
+      if (watchSees()) { const [x, z] = cellOf(P.pos); w.known = { f: P.f, x, z }; w.lastSeen = now(); }
+      w.repath -= dt;
+      if (w.repath <= 0 && w.known) {
+        w.repath = 0.35;
+        if (P.hidden && w.witness) { const hd = P.hidden; w.goToCell(hd.f, hd.x + hd.face[0], hd.z + hd.face[1]); }
+        else w.goToCell(w.known.f, w.known.x, w.known.z);
+      }
+      w.step(3.35 * sp, dt);
+      if (now() - w.lastSeen > (P.hidden && w.witness ? 6 : 4)) { w.state = 'walk'; w.timer = 25; w.witness = false; }
+      break;
+    }
+  }
+  if (w.state !== 'sleep') {
+    if (P.hidden && w.witness && pd < 1.7) caught(w);
+    else if (!P.hidden && pd < 1.05) caught(w);
+  }
+  if (w.state !== 'sleep') animWalk(U, w, 0.45);
+  w.sync();
+}
+
+// ---------- Кукла ----------
+const DOLL_Z = 9 * CS, DOLL_X0 = cc(3), DOLL_X1 = cc(16), DOLL_Y = 2.55;
+function updateDoll(dt) {
+  const d = doll, U = d.mesh.userData;
+  U.key.rotation.z += dt * 4;
+  if (d.stun > 0) {
+    d.stun -= dt; U.body.rotation.z = Math.sin(now() * 3) * 0.6 * Math.min(1, d.stun / 3); U.eyeMat.emissive.setHex(0);
+    d.mesh.position.set(d.x, DOLL_Y, DOLL_Z); return;
+  }
+  U.body.rotation.z = Math.sin(now() * 2) * 0.05;
+  if (d.wait > 0) { d.wait -= dt; } else {
+    d.x += d.dir * 1.25 * D.speed * dt;
+    if (d.x > DOLL_X1) { d.x = DOLL_X1; d.dir = -1; d.wait = 1.6; }
+    if (d.x < DOLL_X0) { d.x = DOLL_X0; d.dir = 1; d.wait = 1.6; }
+  }
+  d.mesh.rotation.y = lerpAngle(d.mesh.rotation.y, d.dir > 0 ? Math.PI / 2 : -Math.PI / 2, Math.min(1, dt * 4));
+  d.mesh.position.set(d.x, DOLL_Y, DOLL_Z);
+  d.cool -= dt;
+  U.eyeMat.emissive.setHex(d.cool > 4 ? 0xaa0000 : 0x000000);
+  if (d.cool <= 0 && P.f === 1 && !P.hidden && Math.abs(P.pos.z - DOLL_Z) < 3.4) {
+    const dx = P.pos.x - d.x;
+    if (Math.sign(dx) === d.dir && Math.abs(dx) < (P.crouch && !P.light ? 3.5 : 7.5) && los(1, V(d.x, 0, DOLL_Z), P.pos)) {
+      sfx.dollRing(V(d.x, DOLL_Y, DOLL_Z)); d.cool = 7; toast('Кукла звенит!');
+      noise(1, P.pos.clone(), 60, true);
+      if (hostess.stun <= 0) startChase(hostess);
+      if (watchman.state === 'sleep') wakeWatch();
+      if (watchman.state !== 'chase') { const [x, z] = cellOf(P.pos); watchman.goToCell(1, x, z); }
+    }
+  }
+}
+
+// ---------- Нечто ----------
+function updateThing(dt) {
+  const t = thing, U = t.mesh.userData;
+  const k = now();
+  U.tents.forEach((tn, i) => {
+    const spread = t.state === 'block' ? 1 : 0;
+    tn.base.rotation.x = 0.2 - spread * 0.25 + Math.sin(k * 2 + tn.phase) * 0.15;
+    tn.segs.forEach((s, j) => { s.rotation.x = Math.sin(k * 3 + tn.phase + j) * (0.35 - spread * 0.2) + (spread ? 0 : 0.25); s.rotation.y = Math.cos(k * 2.2 + tn.phase + j) * 0.2; });
+  });
+  U.core.scale.set(1 + Math.sin(k * 3) * 0.06, 0.8 + Math.cos(k * 3) * 0.05, 1);
+  if (t.stun > 0) { t.stun -= dt; t.sync(); return; }
+  const pd = t.distP(), sp = D.speed;
+  if (t.state !== 'hunt' && P.f === 0 && (P.idle > D.thingIdle || pd < 3.2)) { t.state = 'hunt'; t.repath = 0; if (pd > 3.2) toast('Что-то ползёт из темноты…'); }
+  switch (t.state) {
+    case 'idle': case 'wander':
+      if (!t.path.length) { t.goToCell(...THING_WP[(Math.random() * THING_WP.length) | 0]); t.state = 'wander'; }
+      if (t.step(1.0 * sp, dt)) { t.state = 'block'; t.timer = rand(9, 14); }
+      break;
+    case 'block': t.timer -= dt; if (t.timer <= 0) t.state = 'wander'; break;
+    case 'hunt':
+      t.repath -= dt;
+      if (t.repath <= 0) { t.repath = 0.5; const [x, z] = cellOf(P.pos); t.goToCell(0, x, z); }
+      t.step(2.35 * sp, dt);
+      if (P.f !== 0) { t.lost = (t.lost || 0) + dt; if (t.lost > 2.5) { t.state = 'wander'; t.lost = 0; t.path = []; } } else t.lost = 0;
+      break;
+  }
+  t.g = (t.g || 0) - dt; if (t.g <= 0) { sfx.gurgle(t.pos); t.g = t.state === 'hunt' ? 1.6 : 4; }
+  if (P.f === 0 && pd < (t.state === 'block' ? 1.5 : 1.2)) caught(t);
+  t.sync();
+}
+
+// ---------- двери ----------
+function setDoor(d, open) {
+  if (d.locked) return;
+  if (!open) { // не закрывать на ком-то
+    const occ = [P, hostess, watchman].some(e => e.f === d.f && cellOf(e.pos)[0] === d.x && cellOf(e.pos)[1] === d.z);
+    if (occ) return;
+  }
+  d.open = open; sfx.door(V(cc(d.x), FLOOR_Y[d.f] + 1.2, cc(d.z)), open);
+  noise(d.f, V(cc(d.x), FLOOR_Y[d.f], cc(d.z)), P.crouch ? 3 : 6, false);
+}
+function buildDoors(group) {
+  G.doors.clear();
+  const wood = new THREE.MeshLambertMaterial({ map: T.wood, color: 0x8a6a50 });
+  const knob = new THREE.MeshLambertMaterial({ color: 0xa08030, emissive: 0x201000 });
+  const wallM = [world.mats.wall1, world.mats.wall2];
+  for (let f = 1; f < 3; f++) for (let z = 0; z < H; z++) for (let x = 0; x < W; x++) {
+    const ch = maps[f][z][x];
+    const lr = cell(f, x - 1, z) === '#' && cell(f, x + 1, z) === '#';
+    const ud = cell(f, x, z - 1) === '#' && cell(f, x, z + 1) === '#';
+    if ((lr || ud) && '.cDL'.includes(ch) && insideHouse(x, z)) { // перемычка над проёмом
+      const lint = lr ? box(CS, 0.6, CS * 0.98, wallM[f - 1]) : box(CS * 0.98, 0.6, CS, wallM[f - 1]);
+      lint.position.set(cc(x), FLOOR_Y[f] + 2.7, cc(z)); group.add(lint);
+    }
+    if (ch !== 'D' && ch !== 'L') continue;
+    const piv = new THREE.Group();
+    const panel = new THREE.Group();
+    panel.add(box(CS - 0.12, 2.38, 0.08, wood, 0, 0, 0));
+    panel.add(box(CS - 0.5, 0.05, 0.1, new THREE.MeshLambertMaterial({ color: 0x2a1a10 }), 0, 0.5, 0));
+    panel.add(box(CS - 0.5, 0.05, 0.1, new THREE.MeshLambertMaterial({ color: 0x2a1a10 }), 0, -0.4, 0));
+    const k1 = box(0.08, 0.08, 0.2, knob, CS / 2 - 0.25, 0, 0); panel.add(k1);
+    const key = f + ',' + x + ',' + z;
+    if (ch === 'L') {
+      const lockM = LOCKS[key] === 'screwdriver' ? 0x707070 : 0x8a4a20;
+      panel.add(box(0.5, 0.06, 0.14, new THREE.MeshLambertMaterial({ color: lockM }), 0, 0.15, 0));
+      panel.add(box(0.5, 0.06, 0.14, new THREE.MeshLambertMaterial({ color: lockM }), 0, -0.15, 0));
+    }
+    panel.position.set(CS / 2, 1.2, 0); piv.add(panel);
+    if (lr) { piv.position.set(x * CS + 0.06, FLOOR_Y[f], cc(z)); piv.userData.axis = 'x'; }
+    else { piv.position.set(cc(x), FLOOR_Y[f], z * CS + 0.06); piv.rotation.y = -Math.PI / 2; piv.userData.axis = 'z'; }
+    piv.userData.base = piv.rotation.y;
+    group.add(piv);
+    G.doors.set(key, { f, x, z, open: false, locked: ch === 'L', needs: LOCKS[key], t: 0, piv });
+  }
+}
+
+// ---------- предметы и физика ----------
+function addObject(id, f, x, z, kind) {
+  const mesh = makeItemMesh(id, kind === 'item' && D.glow);
+  const ch = cell(f, x, z);
+  const top = ch === 'T' ? FLOOR_Y[f] + 0.86 : FLOOR_Y[f] + 0.01;
+  const pos = V(cc(x) + rand(-0.35, 0.35), top, cc(z) + rand(-0.3, 0.3));
+  mesh.position.copy(pos); mesh.rotation.y = rand(0, 6.28);
+  G.dyn.add(mesh);
+  const o = { id, kind, mesh, f, pos, vel: V(), rest: true, broken: false, home: { f, x, z }, name: (ITEMS[id] || PROPS[id]).name, breaks: kind === 'prop' && PROPS[id].breaks };
+  G.objects.push(o); return o;
+}
+function solidObj(f, x, z, y) {
+  const ch = cell(f, x, z);
+  if (ch === null) return true;
+  if ('#fWY R'.includes(ch) && ch !== ' ') return true;
+  if (ch === 'B') return y < FLOOR_Y[f] + 0.6;
+  if (ch === 'T') return y < FLOOR_Y[f] + 0.82;
+  if (ch === 'G') return !G.esc.gateOpen;
+  if (ch === 'D' || ch === 'L') { const d = doorAt(f, x, z); return !d || d.t < 0.85; }
+  return false;
+}
+function surfaceY(f, x, z, y) {
+  const cx = Math.floor(x / CS), cz = Math.floor(z / CS), ch = cell(f, cx, cz);
+  if (ch === 'T' && y >= FLOOR_Y[f] + 0.8) return FLOOR_Y[f] + 0.86;
+  if (ch === 'B' && y >= FLOOR_Y[f] + 0.6) return FLOOR_Y[f] + 0.64;
+  if (ch === ' ' && f > 0) return -99;
+  if (ch === 'w') return FLOOR_Y[f] - 0.5;
+  return heightAt(f, x, z);
+}
+function physics(dt) {
+  for (const o of G.objects) {
+    if (o.rest || o.broken || o === P.held) continue;
+    o.vel.y -= 9.8 * dt;
+    const r = 0.1;
+    // по осям
+    let nx = o.pos.x + o.vel.x * dt;
+    if (solidObj(o.f, Math.floor((nx + Math.sign(o.vel.x) * r) / CS), Math.floor(o.pos.z / CS), o.pos.y)) { hitWall(o, Math.abs(o.vel.x)); o.vel.x *= -0.35; nx = o.pos.x; }
+    o.pos.x = nx;
+    let nz = o.pos.z + o.vel.z * dt;
+    if (solidObj(o.f, Math.floor(o.pos.x / CS), Math.floor((nz + Math.sign(o.vel.z) * r) / CS), o.pos.y)) { hitWall(o, Math.abs(o.vel.z)); o.vel.z *= -0.35; nz = o.pos.z; }
+    o.pos.z = nz;
+    o.pos.y += o.vel.y * dt;
+    if (o.f < 2 && o.pos.y > FLOOR_Y[o.f] + 2.9) o.vel.y = Math.min(o.vel.y, 0) - 0.5;
+    let s = surfaceY(o.f, o.pos.x, o.pos.z, o.pos.y);
+    if (s === -99) { if (o.pos.y < FLOOR_Y[o.f]) o.f--; s = surfaceY(o.f, o.pos.x, o.pos.z, o.pos.y); }
+    o.f = floorFromY(o.f, o.pos.x, o.pos.z, o.pos.y);
+    // вода — предмет уносит течением, он возвращается на место
+    if (cell(o.f, Math.floor(o.pos.x / CS), Math.floor(o.pos.z / CS)) === 'w' && o.pos.y < FLOOR_Y[o.f] - 0.3) {
+      sfx.splash(o.pos); respawnObj(o); if (o.kind === 'item') toast(o.name + ': течение унесло — ищи на прежнем месте'); continue;
+    }
+    if (o.pos.y < s) {
+      const imp = -o.vel.y;
+      o.pos.y = s;
+      if (imp > 2.2) {
+        if (o.breaks && imp + Math.hypot(o.vel.x, o.vel.z) * 0.5 > 5) { breakObj(o); continue; }
+        sfx.impact(o.pos, imp); noise(o.f, o.pos, Math.min(17, 3 + imp * 1.6), false);
+      }
+      o.vel.y = imp > 1.5 ? imp * 0.3 : 0; o.vel.x *= 0.62; o.vel.z *= 0.62;
+      if (Math.hypot(o.vel.x, o.vel.y, o.vel.z) < 0.25) { o.rest = true; o.vel.set(0, 0, 0); }
+    }
+    o.mesh.position.copy(o.pos);
+    o.mesh.rotation.x += o.vel.length() * dt * 2; o.mesh.rotation.z += o.vel.x * dt;
+    if (o.rest) { o.mesh.rotation.x = 0; o.mesh.rotation.z = 0; }
+    // попадание во врага
+    const sp = o.vel.length();
+    if (sp > 4.5 && o.thrown) {
+      for (const e of [hostess, watchman, thing]) {
+        if (e.stun > 0) continue;
+        const eh = e === thing ? 0.8 : 1.3;
+        if (Math.hypot(e.pos.x - o.pos.x, e.pos.z - o.pos.z) < 0.6 && Math.abs(e.pos.y + eh - o.pos.y) < 0.9) {
+          e.stun = e === thing ? 2.5 : e === hostess ? 3.5 : 4.5; o.vel.multiplyScalar(-0.3); sfx.impact(o.pos, 8);
+          if (e.state === 'sleep') wakeWatch();
+          toast(e === hostess ? 'Хозяйка оглушена!' : e === watchman ? 'Сторож оглушён!' : 'Нечто отшатнулось!');
+          if (e === hostess) { e.state = 'investigate'; const [x, z] = cellOf(P.pos); e.goToCell(P.f, x, z); }
+          if (e === watchman) startChase(watchman);
+        }
+      }
+      if (doll.stun <= 0 && o.f === 1 && Math.hypot(doll.x - o.pos.x, DOLL_Z - o.pos.z) < 0.6 && Math.abs(DOLL_Y - 0.3 - o.pos.y) < 0.6) {
+        doll.stun = 18; o.vel.multiplyScalar(-0.3); sfx.impact(o.pos, 9); toast('Кукла сбита на 18 секунд');
+      }
+    }
+  }
+  // осколки
+  for (let i = G.shards.length - 1; i >= 0; i--) {
+    const s = G.shards[i]; s.t -= dt; s.v.y -= 9.8 * dt; s.m.position.addScaledVector(s.v, dt);
+    if (s.m.position.y < s.floor) { s.m.position.y = s.floor; s.v.multiplyScalar(0.3); }
+    if (s.t <= 0) { G.dyn.remove(s.m); G.shards.splice(i, 1); }
+  }
+}
+function hitWall(o, s) { if (s > 3) { sfx.impact(o.pos, s); noise(o.f, o.pos, Math.min(16, 3 + s * 1.4), false); if (o.breaks && s > 6) breakObj(o); } }
+function breakObj(o) {
+  o.broken = true; G.dyn.remove(o.mesh); sfx.glass(o.pos); noise(o.f, o.pos, 18, false);
+  const m = new THREE.MeshLambertMaterial({ color: o.id === 'vase' ? 0x3a5a8a : o.id === 'plate' ? 0xd8d0c0 : 0x1f4a20 });
+  for (let i = 0; i < 8; i++) { const s = box(0.05, 0.02, 0.05, m); s.position.copy(o.pos); G.dyn.add(s); G.shards.push({ m: s, v: V(rand(-2, 2), rand(1, 3), rand(-2, 2)), t: 6, floor: o.pos.y }); }
+}
+function respawnObj(o) {
+  const { f, x, z } = o.home; const ch = cell(f, x, z);
+  o.f = f; o.pos.set(cc(x), ch === 'T' ? FLOOR_Y[f] + 0.86 : FLOOR_Y[f] + 0.01, cc(z)); o.vel.set(0, 0, 0); o.rest = true; o.thrown = false;
+  o.mesh.position.copy(o.pos); o.mesh.rotation.set(0, 0, 0);
+}
+
+// ---------- игрок: предмет в руках ----------
+function setHeld(o) {
+  if (heldView) { camera.remove(heldView); heldView = null; }
+  P.held = o;
+  if (o) {
+    o.mesh.visible = false;
+    heldView = makeItemMesh(o.id, false);
+    heldView.position.set(0.3, -0.27, -0.55); heldView.rotation.set(0.3, -0.6, 0);
+    if (o.id === 'oar') { heldView.position.set(0.35, -0.35, -0.9); heldView.rotation.set(0, -1.3, 0.3); }
+    heldView.traverse(m => { if (m.material) { m.material = m.material.clone(); m.material.depthTest = false; m.renderOrder = 10; m.material.fog = false; } });
+    camera.add(heldView);
+  }
+  $('heldName').textContent = o ? o.name : 'ничего';
+}
+function releaseHeld(throwIt) {
+  const o = P.held; if (!o) return;
+  const dir = V(); camera.getWorldDirection(dir);
+  const cp = camera.getWorldPosition(V());
+  // не выпускать внутрь стены
+  let start = cp.clone().addScaledVector(dir, 0.45); start.y -= 0.15;
+  const [sx, sz] = cellOf(start);
+  if (solidObj(P.f, sx, sz, start.y)) { start = cp.clone(); start.y -= 0.2; }
+  o.pos.copy(start); o.f = P.f;
+  if (throwIt) { o.vel.copy(dir).multiplyScalar(11); o.vel.y += 1.6; o.thrown = true; }
+  else { o.vel.set(dir.x * 0.6, 0, dir.z * 0.6); o.thrown = false; }
+  o.rest = false; o.mesh.visible = true; o.mesh.position.copy(o.pos);
+  setHeld(null);
+}
+
+// ---------- взаимодействие ----------
+let focus = null;
+function candidates() {
+  const list = [];
+  const cp = camera.getWorldPosition(V());
+  if (P.hidden) return [{ kind: 'exit', label: 'Выйти', pos: cp }];
+  for (const o of G.objects) {
+    if (o.broken || o === P.held || o.f !== P.f && Math.abs(o.pos.y - P.pos.y) > 1.6) continue;
+    if (!o.rest && o.vel.length() > 1) continue;
+    list.push({ kind: 'obj', o, pos: V(o.pos.x, o.pos.y + 0.08, o.pos.z), label: (P.held ? 'Поменять на: ' : 'Взять: ') + o.name });
+  }
+  for (const d of G.doors.values()) {
+    if (d.f !== P.f) continue;
+    const pos = V(cc(d.x), FLOOR_Y[d.f] + 1.1, cc(d.z));
+    let label = d.open ? 'Закрыть дверь' : 'Открыть дверь';
+    if (d.locked) label = P.held && P.held.id === d.needs ? (d.needs === 'screwdriver' ? 'Открутить доски' : 'Отпереть') : (d.needs === 'screwdriver' ? 'Заколочено: нужна отвёртка' : 'Заперто: нужен ржавый ключ');
+    list.push({ kind: 'door', d, pos, label });
+  }
+  for (const h of furn.hides) {
+    if (h.f !== P.f) continue;
+    list.push({ kind: 'hide', h, pos: V(h.pos.x, h.pos.y + (h.type === 'bed' ? 0.5 : 1.1), h.pos.z), label: h.type === 'bed' ? 'Залезть под кровать' : 'Спрятаться в шкаф' });
+  }
+  const esc = (type, f, pos) => {
+    if (P.f !== f) return;
+    const e = G.esc[type], def = ESCAPES[type];
+    const miss = def.parts.filter(p => !e[p]);
+    let label;
+    if (!miss.length) label = type === 'gate' ? 'Ворота открыты' : type === 'boat' ? 'Уплыть!' : type === 'rail' ? 'Поехать!' : 'Улететь!';
+    else if (P.held && miss.includes(P.held.id)) label = 'Установить: ' + P.held.name;
+    else label = def.name + ': нужно ' + miss.map(p => ITEMS[p].name.toLowerCase()).join(' и ');
+    list.push({ kind: 'esc', type, pos, label, far: true });
+  };
+  esc('gate', 1, V(cc(9), 1.1, CS * 0.9));
+  esc('boat', 0, V(boatM.position.x, -2.8, boatM.position.z));
+  esc('rail', 1, V(draisineM.position.x, 0.8, draisineM.position.z));
+  esc('kite', 2, V(cc(9), 4.2, cc(2)));
+  return list;
+}
+function pickFocus() {
+  const cp = camera.getWorldPosition(V()), dir = V(); camera.getWorldDirection(dir);
+  let best = null, bs = 1e9;
+  for (const c of candidates()) {
+    if (c.kind === 'exit') return c;
+    const v = c.pos.clone().sub(cp), d = v.length();
+    if (d > (c.far ? 3.3 : 2.3)) continue;
+    const dot = v.normalize().dot(dir);
+    if (dot < (c.kind === 'door' ? 0.55 : 0.72)) continue;
+    const sc = d * (1.6 - dot); if (sc < bs) { bs = sc; best = c; }
+  }
+  return best;
+}
+function doAction() {
+  ensureAudio();
+  if (G.mode !== 'play') return;
+  const c = focus; if (!c) return;
+  if (c.kind === 'exit') { exitHide(); return; }
+  if (c.kind === 'obj') {
+    const o = c.o;
+    if (P.held) releaseHeld(false);
+    o.rest = true; o.vel.set(0, 0, 0); setHeld(o); sfx.pickup();
+    return;
+  }
+  if (c.kind === 'door') {
+    const d = c.d;
+    if (d.locked) {
+      if (P.held && P.held.id === d.needs) {
+        d.locked = false; maps[d.f][d.z][d.x] = 'D'; consumeHeld(); sfx.install();
+        toast(d.needs === 'screwdriver' ? 'Доски сняты — выход на балкон открыт' : 'Дверь в подвал отперта');
+        setDoor(d, true);
+      } else { sfx.locked(c.pos); toast(c.label); }
+      return;
+    }
+    setDoor(d, !d.open); return;
+  }
+  if (c.kind === 'hide') { enterHide(c.h); return; }
+  if (c.kind === 'esc') {
+    const e = G.esc[c.type], def = ESCAPES[c.type];
+    const miss = def.parts.filter(p => !e[p]);
+    if (P.held && miss.includes(P.held.id)) {
+      const id = P.held.id; e[id] = true; consumeHeld(); sfx.install(); noise(P.f, P.pos, 5, true);
+      applyEscVisual(c.type);
+      const left = def.parts.filter(p => !e[p]);
+      if (!left.length) {
+        if (c.type === 'gate') { G.esc.gateOpen = true; maps[1][0][9] = '.'; toast('Ворота открыты! Беги наружу!'); noise(1, P.pos, 14, true); }
+        else toast(def.name + ' готова! Нажми ещё раз');
+      } else toast('Ещё нужно: ' + left.map(p => ITEMS[p].name.toLowerCase()).join(', '));
+      return;
+    }
+    if (!miss.length && c.type !== 'gate') { startEscape(c.type); return; }
+    toast(c.label);
+  }
+}
+function consumeHeld() { const o = P.held; setHeld(null); o.broken = true; o.used = true; G.dyn.remove(o.mesh); }
+function applyEscVisual(type) {
+  const e = G.esc;
+  if (type === 'gate') { gateM.userData.chain.visible = !e.gate.cutters; gateM.userData.padlock.visible = !e.gate.gatekey; }
+  if (type === 'boat') { boatM.userData.oar.visible = e.boat.oar; boatM.userData.chain.visible = !e.boat.boatkey; }
+  if (type === 'rail') { draisineM.userData.lever.visible = e.rail.lever; draisineM.userData.batt.visible = e.rail.battery; }
+  if (type === 'kite') { kiteM.userData.frame.visible = e.kite.kiteframe; kiteM.userData.sail.visible = e.kite.kitecloth && e.kite.kiteframe; }
+}
+
+// прятки
+function enterHide(h) {
+  if (P.held && h.type === 'bed') { /* можно и с предметом */ }
+  P.hidden = h; P.crouch = false; P.prevPos = P.pos.clone();
+  for (const e of [hostess, watchman]) {
+    const d = e.distP();
+    if (e.state === 'chase' && (d < (e === hostess ? (diffKey === 'nightmare' ? 6 : 4) : 5) || (e === watchman && watchSees()))) e.witness = true;
+  }
+  sfx.door(h.pos, true); noise(h.f, h.pos, h.type === 'wardrobe' ? 3 : 1.5, true);
+  $('peek').classList.remove('hidden'); $('peek').classList.toggle('bed', h.type === 'bed');
+  P.yaw = Math.atan2(-h.face[0], -h.face[1]); P.pitch = 0;
+}
+function exitHide() {
+  const h = P.hidden; if (!h) return;
+  P.hidden = null;
+  P.pos.set(cc(h.x + h.face[0]), FLOOR_Y[h.f], cc(h.z + h.face[1])); P.f = h.f;
+  hostess.witness = watchman.witness = false;
+  sfx.door(h.pos, false); noise(h.f, h.pos, 2.5, true);
+  $('peek').classList.add('hidden');
+}
+
+// ---------- поимка, дни, побег ----------
+function caught(e) {
+  if (G.mode !== 'play') return;
+  G.mode = 'caught'; G.ct = 0; G.catcher = e; $('hud').classList.add('hidden'); $('vign').style.opacity = 0;
+  sfx.scream();
+  if (P.held) { const o = P.held; setHeld(null); o.pos.copy(P.pos); o.pos.y += 0.05; o.f = P.f; o.rest = true; o.mesh.visible = true; o.mesh.position.copy(o.pos); }
+  if (P.hidden) { P.hidden = null; $('peek').classList.add('hidden'); }
+  G.splits.push({ t: G.time, what: 'День ' + G.day + ' — ' + (e === hostess ? 'Хозяйка' : e === watchman ? 'Сторож' : 'Нечто') });
+}
+function updateCaught(dt) {
+  G.ct += dt;
+  const e = G.catcher;
+  const cp = camera.position;
+  const dir = V(Math.sin(e.yaw), 0, Math.cos(e.yaw));
+  // поворачиваемся к лицу
+  const ty = Math.atan2(-(e.pos.x - P.pos.x), -(e.pos.z - P.pos.z));
+  P.yaw = lerpAngle(P.yaw, ty, Math.min(1, dt * 12));
+  const eh = e.mesh.userData.eyeH || 1.6;
+  const targetPitch = Math.atan2((e.pos.y + eh) - cp.y, Math.max(0.3, Math.hypot(e.pos.x - cp.x, e.pos.z - cp.z)));
+  P.pitch += (targetPitch - P.pitch) * Math.min(1, dt * 10);
+  if (G.ct < 0.5) { e.pos.x += (P.pos.x - e.pos.x) * dt * 3; e.pos.z += (P.pos.z - e.pos.z) * dt * 3; e.yaw = Math.atan2(P.pos.x - e.pos.x, P.pos.z - e.pos.z); e.sync(); }
+  $('red').style.opacity = Math.min(0.9, G.ct * 1.5).toFixed(2);
+  camera.position.x += (Math.random() - 0.5) * 0.04; camera.position.y += (Math.random() - 0.5) * 0.04;
+  void dir;
+  if (G.ct > 1.7) {
+    $('red').style.opacity = 0;
+    G.day++;
+    if (G.day > D.days) { gameOver(); return; }
+    startDay();
+  }
+}
+function startDay() {
+  G.mode = 'daybreak'; G.dt0 = 0;
+  showFade('ДЕНЬ ' + G.day);
+  P.f = SPAWN_PLAYER.f; P.pos.set(cc(SPAWN_PLAYER.x), FLOOR_Y[P.f], cc(SPAWN_PLAYER.z)); P.yaw = SPAWN_PLAYER.yaw; P.pitch = 0;
+  P.hidden = null; P.crouch = false; P.idle = 0; P.stamina = 100; P.tired = false; P.light = false; P.noiseT = -99;
+  $('peek').classList.add('hidden');
+  hostess.place(2, 14, 5); hostess.state = 'patrol'; hostess.stun = 0; hostess.witness = false; hostess.wait = 0;
+  watchman.place(...CHAIR); watchman.state = 'sleep'; watchman.timer = rand(...D.sleep) * (G.day === 1 ? 1 : 0.6); watchman.yaw = Math.PI; watchman.stun = 0; watchman.witness = false; watchman.wait = 0;
+  thing.place(0, 11, 4); thing.state = 'wander'; thing.stun = 0;
+  doll.x = DOLL_X1; doll.dir = -1; doll.stun = 0; doll.cool = 0; doll.wait = 0;
+  $('day').textContent = G.day; $('hud').classList.remove('hidden');
+  updateHUD();
+}
+function startEscape(type) {
+  G.mode = 'escape'; G.et = 0; G.escType = type; $('hud').classList.add('hidden');
+  if (P.held) setHeld(null);
+  if (type === 'boat') { sfx.engine(); P.pos.set(boatM.position.x, FLOOR_Y[0] - 0.2, boatM.position.z); P.yaw = Math.PI; }
+  if (type === 'rail') { sfx.engine(); P.pos.set(draisineM.position.x, 0.6, draisineM.position.z); P.yaw = 0; }
+  if (type === 'kite') { sfx.wind(); P.yaw = 0; }
+  if (type === 'gate') P.yaw = 0;
+  P.pitch = 0;
+}
+function updateEscape(dt) {
+  G.et += dt;
+  const t = G.escType;
+  if (t === 'boat') { boatM.position.z += dt * (2 + G.et); P.pos.z = boatM.position.z; P.pos.x = boatM.position.x; }
+  if (t === 'rail') { draisineM.position.z -= dt * (2 + G.et * 2.5); P.pos.z = draisineM.position.z; }
+  if (t === 'kite') { P.pos.y += dt * (1 + G.et); P.pos.z -= dt * (2 + G.et); P.pitch = -0.2; kiteM.position.set(P.pos.x, P.pos.y + 2.6, P.pos.z - 0.5); }
+  if (t === 'gate') { P.pos.z -= dt * 3.2; }
+  if (G.et > 2.6 && !G.escFade) { G.escFade = true; showFade(''); }
+  if (G.et > 3.6) { G.escFade = false; finish(true); }
+}
+function gameOver() { finish(false); }
+function finish(win) {
+  G.mode = 'over';
+  const res = $('result');
+  if (win) {
+    sfx.win();
+    G.splits.push({ t: G.time, what: 'Побег: ' + ESCAPES[G.escType].name });
+    let best = null, rec = false;
+    try { best = parseFloat(localStorage.getItem('hushwood.best.' + diffKey)); if (!(best > 0) || G.time < best) { localStorage.setItem('hushwood.best.' + diffKey, String(G.time)); rec = true; } } catch (e) { }
+    $('resTitle').textContent = 'СВОБОДА';
+    $('resSub').textContent = 'Вы сбежали ' + ESCAPES[G.escType].how + ' · ' + D.name + ' · день ' + G.day + ' из ' + D.days;
+    $('resTime').textContent = fmt(G.time) + (rec ? '  — новый рекорд!' : best > 0 ? '  (рекорд ' + fmt(best) + ')' : '');
+  } else {
+    sfx.lose();
+    $('resTitle').textContent = 'ДОМ НЕ ОТПУСТИЛ';
+    $('resSub').textContent = 'Дни кончились. ' + D.name + ' сложность.';
+    $('resTime').textContent = fmt(G.time);
+  }
+  $('resSplits').innerHTML = G.splits.map(s => fmt(s.t) + ' · ' + s.what).join('<br>');
+  $('hud').classList.add('hidden'); hideFade();
+  res.classList.remove('hidden');
+  document.exitPointerLock && document.exitPointerLock();
+}
+function fmt(t) { const m = Math.floor(t / 60), s = t - m * 60; return String(m).padStart(2, '0') + ':' + s.toFixed(2).padStart(5, '0'); }
+
+// ---------- запуск игры ----------
+function newGame(key) {
+  diffKey = key; D = DIFFS[key];
+  try { localStorage.setItem('hushwood.diff', key); } catch (e) { }
+  maps = buildMaps();
+  if (G.dyn) scene.remove(G.dyn);
+  G.dyn = new THREE.Group(); scene.add(G.dyn);
+  G.objects = []; G.shards = []; G.splits = []; G.time = 0; G.day = 1; G.escFade = false;
+  G.esc = { gateOpen: false, gate: {}, boat: {}, rail: {}, kite: {} };
+  setHeld(null);
+  buildDoors(G.dyn);
+  // предметы
+  let place = { ...DEFAULT_ITEMS };
+  if (D.random) {
+    for (let tries = 0; tries < 50; tries++) {
+      const pool = SPAWNS.slice().sort(() => Math.random() - 0.5);
+      const ids = Object.keys(DEFAULT_ITEMS); place = {};
+      ids.forEach((id, i) => place[id] = pool[i]);
+      if (place.rustykey[0] !== 0) break;
+    }
+  }
+  for (const id in place) addObject(id, ...place[id], 'item');
+  for (const [f, x, z, id] of PROP_SPOTS) { const o = addObject(id, f, x, z, 'prop'); if (cell(f, x, z) === 'T') { o.pos.x += 0.45; o.mesh.position.copy(o.pos); } }
+  // транспорт
+  gateM = makeGate(); gateM.position.set(cc(9), 0, CS * 0.5); G.dyn.add(gateM);
+  boatM = makeBoat(); boatM.position.set(3 * CS + 1.1, FLOOR_Y[0] - 0.45, cc(14.6)); G.dyn.add(boatM);
+  draisineM = makeDraisine(); draisineM.position.set(cc(20), 0, cc(13)); G.dyn.add(draisineM);
+  kiteM = makeKiteStand(); kiteM.position.set(cc(9), FLOOR_Y[2], cc(2) - 0.3); G.dyn.add(kiteM);
+  for (const k of ['gate', 'boat', 'rail', 'kite']) applyEscVisual(k);
+  // враги
+  if (!hostess) {
+    hostess = new Walker(makeHostess(), allowUpper); scene.add(hostess.mesh);
+    watchman = new Walker(makeWatchman(T), allowUpper); scene.add(watchman.mesh);
+    thing = new Walker(makeThing(), allowThing); scene.add(thing.mesh);
+    const dm = makeDoll(); scene.add(dm);
+    doll = { mesh: dm, x: DOLL_X1, dir: -1, stun: 0, cool: 0, wait: 0 };
+    const rail = box((DOLL_X1 - DOLL_X0) + 1.2, 0.06, 0.1, new THREE.MeshLambertMaterial({ color: 0x3a3a3a }));
+    rail.position.set((DOLL_X0 + DOLL_X1) / 2, 2.95, DOLL_Z); scene.add(rail);
+  }
+  // свет
+  for (const l of lamps) l.base0 = l.base0 || l.base;
+  for (const l of lamps) l.base = l.base0 * D.light;
+  hemi.intensity = hemiBase * D.light; moon.intensity = moonBase * D.light;
+  P.battery = 100;
+  $('days').textContent = D.days; $('dname').textContent = D.name;
+  $('menu').classList.add('hidden'); $('result').classList.add('hidden'); $('pause').classList.add('hidden');
+  $('hud').classList.remove('hidden');
+  startDay();
+  toast('Найди путь наружу. Пауза — подсказки.', 3.5);
+}
+
+// ---------- ввод ----------
+const keys = {};
+const joy = { id: null, ox: 0, oy: 0, x: 0, y: 0 };
+const look = { id: null, lx: 0, ly: 0 };
+const touchEl = $('touch');
+touchEl.addEventListener('pointerdown', (e) => {
+  ensureAudio();
+  if (G.mode === 'menu' || G.mode === 'over') return;
+  if (!isTouch && e.pointerType === 'mouse') { canvas.requestPointerLock && canvas.requestPointerLock(); return; }
+  if (e.clientX < window.innerWidth * 0.45 && joy.id === null) {
+    joy.id = e.pointerId; joy.ox = e.clientX; joy.oy = e.clientY; joy.x = joy.y = 0;
+    const j = $('joy'); j.style.left = e.clientX + 'px'; j.style.top = e.clientY + 'px'; j.classList.remove('hidden');
+  } else if (look.id === null) { look.id = e.pointerId; look.lx = e.clientX; look.ly = e.clientY; }
+  touchEl.setPointerCapture && touchEl.setPointerCapture(e.pointerId);
+});
+touchEl.addEventListener('pointermove', (e) => {
+  if (e.pointerId === joy.id) {
+    let dx = e.clientX - joy.ox, dy = e.clientY - joy.oy; const m = Math.hypot(dx, dy), max = 60;
+    if (m > max) { dx = dx / m * max; dy = dy / m * max; }
+    joy.x = dx / max; joy.y = dy / max;
+    $('joy').firstElementChild.style.transform = `translate(${dx}px, ${dy}px)`;
+  } else if (e.pointerId === look.id) {
+    const s = 0.0055;
+    P.yaw -= (e.clientX - look.lx) * s; P.pitch -= (e.clientY - look.ly) * s;
+    P.pitch = Math.max(-1.4, Math.min(1.4, P.pitch)); look.lx = e.clientX; look.ly = e.clientY;
+  }
+});
+const endPtr = (e) => {
+  if (e.pointerId === joy.id) { joy.id = null; joy.x = joy.y = 0; $('joy').classList.add('hidden'); $('joy').firstElementChild.style.transform = ''; }
+  if (e.pointerId === look.id) look.id = null;
+};
+touchEl.addEventListener('pointerup', endPtr); touchEl.addEventListener('pointercancel', endPtr);
+document.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement !== canvas || G.mode !== 'play') return;
+  P.yaw -= e.movementX * 0.0025; P.pitch -= e.movementY * 0.0025; P.pitch = Math.max(-1.4, Math.min(1.4, P.pitch));
+});
+document.addEventListener('mousedown', (e) => { if (document.pointerLockElement === canvas && G.mode === 'play') { if (e.button === 0) doAction(); if (e.button === 2) { if (P.held) releaseHeld(true); } } });
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('keydown', (e) => {
+  keys[e.code] = true; ensureAudio();
+  if (G.mode === 'play') {
+    if (e.code === 'KeyE') doAction();
+    if (e.code === 'KeyC' || e.code === 'ControlLeft') toggleCrouch();
+    if (e.code === 'KeyQ') { if (P.held) releaseHeld(true); }
+    if (e.code === 'KeyG') { if (P.held) releaseHeld(false); }
+    if (e.code === 'KeyF') toggleLight();
+  }
+  if (e.code === 'Escape' || e.code === 'KeyP') { if (G.mode === 'play') pauseGame(); else if (G.mode === 'paused') resumeGame(); }
+});
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+function btn(id, fn) { const b = $(id); b.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); ensureAudio(); fn(); }); }
+btn('bAct', doAction);
+btn('bThrow', () => { if (G.mode === 'play' && P.held && !P.hidden) releaseHeld(true); });
+btn('bDrop', () => { if (G.mode === 'play' && P.held && !P.hidden) releaseHeld(false); });
+btn('bCrouch', () => { if (G.mode === 'play') toggleCrouch(); });
+btn('bLight', () => { if (G.mode === 'play') toggleLight(); });
+btn('bPause', () => { if (G.mode === 'play') pauseGame(); });
+function toggleCrouch() { if (P.hidden) return; P.crouch = !P.crouch; $('bCrouch').classList.toggle('on', P.crouch); }
+function toggleLight() { if (P.battery <= 1 && !P.light) { toast('Батарейка фонаря села'); return; } P.light = !P.light; $('bLight').classList.toggle('on', P.light); }
+function pauseGame() {
+  G.prevMode = G.mode; G.mode = 'paused';
+  const e = G.esc;
+  let html = '';
+  for (const k in ESCAPES) {
+    const def = ESCAPES[k];
+    html += '<div><b>' + def.name + '</b>: ' + def.parts.map(p => '<span class="' + (e[k][p] ? 'ok' : 'no') + '">' + (e[k][p] ? '✓ ' : '· ') + ITEMS[p].name + '</span>').join(', ') + '</div>';
+  }
+  html += '<div class="no" style="margin-top:6px">Подвал заперт ржавым ключом. Балкон заколочен — нужна отвёртка.</div>';
+  $('hints').innerHTML = html;
+  $('pause').classList.remove('hidden');
+  document.exitPointerLock && document.exitPointerLock();
+}
+function resumeGame() { G.mode = G.prevMode || 'play'; $('pause').classList.add('hidden'); }
+
+// меню
+function refreshMenu() {
+  document.querySelectorAll('#diffs button').forEach(b => b.classList.toggle('sel', b.dataset.d === diffKey));
+  let txt = [];
+  for (const k in DIFFS) { try { const v = parseFloat(localStorage.getItem('hushwood.best.' + k)); if (v > 0) txt.push(DIFFS[k].name + ' ' + fmt(v)); } catch (e) { } }
+  $('best').textContent = txt.length ? 'Рекорды: ' + txt.join(' · ') : '';
+}
+document.querySelectorAll('#diffs button').forEach(b => b.addEventListener('click', () => { diffKey = b.dataset.d; refreshMenu(); }));
+$('bStart').addEventListener('click', () => { ensureAudio(); newGame(diffKey); });
+$('bHow').addEventListener('click', () => $('how').classList.toggle('hidden'));
+$('bResume').addEventListener('click', resumeGame);
+$('bRestart').addEventListener('click', () => newGame(diffKey));
+$('bMenu').addEventListener('click', toMenu);
+$('bAgain').addEventListener('click', () => newGame(diffKey));
+$('bMenu2').addEventListener('click', toMenu);
+function toMenu() { G.mode = 'menu'; ['pause', 'result', 'hud'].forEach(i => $(i).classList.add('hidden')); $('menu').classList.remove('hidden'); refreshMenu(); }
+
+// ---------- HUD ----------
+let toastTimer = 0;
+function toast(t, dur = 2.2) { const el = $('toast'); el.textContent = t; el.classList.add('on'); toastTimer = dur; }
+function showFade(t) { $('fadeText').textContent = t; $('fade').classList.add('on'); }
+function hideFade() { $('fade').classList.remove('on'); }
+function updateHUD() {
+  $('timer').textContent = fmt(G.time);
+  const a = $('bAct');
+  if (focus) { a.textContent = focus.label; a.classList.remove('idle'); } else { a.textContent = '—'; a.classList.add('idle'); }
+  $('stam').style.visibility = D.stamina ? 'visible' : 'hidden';
+  $('stam').firstElementChild.style.width = P.stamina + '%';
+  $('stam').firstElementChild.style.background = P.tired ? '#8a1414' : '#9a8f7c';
+}
+
+// ---------- игрок: движение ----------
+function updatePlayer(dt) {
+  if (P.hidden) {
+    const h = P.hidden;
+    const back = h.type === 'wardrobe' ? -0.3 : -0.1;
+    P.pos.set(h.pos.x + h.face[0] * back, h.pos.y, h.pos.z + h.face[1] * back);
+    P.eye += ((h.type === 'bed' ? 0.22 : 1.5) - P.eye) * Math.min(1, dt * 8);
+    // поворот головы ограничен
+    const base = Math.atan2(-h.face[0], -h.face[1]);
+    let d = P.yaw - base; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+    P.yaw = base + Math.max(-0.7, Math.min(0.7, d)); P.pitch = Math.max(-0.4, Math.min(0.4, P.pitch));
+    P.idle = 0; P.moving = 0; return;
+  }
+  let mx = joy.x, mz = joy.y;
+  if (keys.KeyW || keys.ArrowUp) mz -= 1; if (keys.KeyS || keys.ArrowDown) mz += 1;
+  if (keys.KeyA || keys.ArrowLeft) mx -= 1; if (keys.KeyD || keys.ArrowRight) mx += 1;
+  const m = Math.min(1, Math.hypot(mx, mz));
+  const wantSprint = (keys.ShiftLeft || keys.ShiftRight || Math.hypot(joy.x, joy.y) > 0.95) && m > 0.5 && !P.crouch;
+  P.sprint = wantSprint && !P.tired;
+  if (D.stamina) {
+    if (P.sprint) { P.stamina -= dt * 20; if (P.stamina <= 0) { P.stamina = 0; P.tired = true; } }
+    else { P.stamina = Math.min(100, P.stamina + dt * (P.moving ? 9 : 16)); if (P.tired && P.stamina > 35) P.tired = false; }
+  }
+  const speed = P.crouch ? 1.6 : P.sprint ? 5.0 : 3.0;
+  let vx = 0, vz = 0;
+  if (m > 0.05) {
+    const l = Math.hypot(mx, mz) || 1; mx /= l; mz /= l;
+    const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw), rx = Math.cos(P.yaw), rz = -Math.sin(P.yaw);
+    vx = (fx * -mz + rx * mx) * speed * m; vz = (fz * -mz + rz * mx) * speed * m;
+  }
+  const r = 0.28;
+  const blocked = (x, z) => {
+    for (const [ox, oz] of [[-r, -r], [r, -r], [-r, r], [r, r]]) if (solidPlayer(P.f, Math.floor((x + ox) / CS), Math.floor((z + oz) / CS))) return true;
+    return false;
+  };
+  const ox = P.pos.x, oz = P.pos.z;
+  if (!blocked(P.pos.x + vx * dt, P.pos.z)) P.pos.x += vx * dt;
+  if (!blocked(P.pos.x, P.pos.z + vz * dt)) P.pos.z += vz * dt;
+  const moved = Math.hypot(P.pos.x - ox, P.pos.z - oz);
+  P.moving = moved / Math.max(dt, 1e-4);
+  const hy = heightAt(P.f, P.pos.x, P.pos.z);
+  P.f = floorFromY(P.f, P.pos.x, P.pos.z, hy);
+  P.pos.y = heightAt(P.f, P.pos.x, P.pos.z);
+  P.eye += ((P.crouch ? 0.85 : 1.6) - P.eye) * Math.min(1, dt * 10);
+  // шаги и шум
+  P.stepAcc += moved;
+  const stride = P.sprint ? 2.0 : P.crouch ? 1.2 : 1.7;
+  if (P.stepAcc > stride) {
+    P.stepAcc = 0;
+    sfx.step(P.crouch, P.sprint, P.f === 0);
+    const rad = P.crouch ? 0 : P.sprint ? 11 : 4.2;
+    if (rad) { P.noiseT = now(); noise(P.f, P.pos.clone(), rad, true); }
+  }
+  const [cx, cz] = cellOf(P.pos), ck = P.f + ',' + cx + ',' + cz;
+  if (ck !== P.lastCell) {
+    P.lastCell = ck;
+    if (cell(P.f, cx, cz) === 'c') { sfx.creak(P.pos); P.noiseT = now(); noise(P.f, P.pos.clone(), P.crouch ? 5 : 9, true); }
+  }
+  if (P.f === 0 && moved < 0.002) P.idle += dt; else P.idle = 0;
+  // побег через ворота
+  if (G.esc.gateOpen && P.f === 1 && P.pos.z < CS * 0.55) { G.escType = 'gate'; startEscape('gate'); }
+}
+
+// ---------- главный цикл ----------
+let last = performance.now();
+function frame(t) {
+  requestAnimationFrame(frame);
+  let dt = Math.min(0.05, (t - last) / 1000); last = t;
+  tick(dt);
+  renderer.render(scene, camera);
+}
+function tick(dt) {
+  if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) $('toast').classList.remove('on'); }
+  const playing = G.mode === 'play' || G.mode === 'caught' || G.mode === 'daybreak' || G.mode === 'escape';
+  if (G.mode === 'menu') { menuCamera(dt); return; }
+  if (!playing) return;
+  G.time += dt;
+  if (G.mode === 'daybreak') { G.dt0 += dt; if (G.dt0 > 1.6) { hideFade(); G.mode = 'play'; } }
+  if (G.mode === 'play') {
+    updatePlayer(dt);
+    updateHostess(dt); updateWatchman(dt); updateDoll(dt); updateThing(dt);
+    focus = pickFocus();
+  } else if (G.mode === 'caught') { updateCaught(dt); focus = null; }
+  else if (G.mode === 'escape') { updateEscape(dt); focus = null; }
+  else { hostess.sync(); watchman.sync(); }
+  physics(dt);
+  // двери
+  for (const d of G.doors.values()) {
+    const tgt = d.open ? 1 : 0; d.t += (tgt - d.t) * Math.min(1, dt * 7);
+    d.piv.rotation.y = d.piv.userData.base + d.t * (Math.PI / 2) * 0.92;
+  }
+  if (G.esc.gateOpen) gateM.userData.leaf.rotation.y = Math.min(1.6, gateM.userData.leaf.rotation.y + dt * 1.5);
+  // лампы мерцают
+  for (const l of lamps) l.light.intensity = l.flicker ? l.base * (Math.random() < 0.03 ? 0.2 : 0.9 + Math.sin(now() * 13) * 0.1) : l.base;
+  // фонарь
+  if (P.light) { if (D.battery) { P.battery -= dt * 1.1; if (P.battery <= 0) { P.battery = 0; P.light = false; $('bLight').classList.remove('on'); toast('Батарейка фонаря села'); } } }
+  else if (D.battery) P.battery = Math.min(100, P.battery + dt * 0.6);
+  flash.intensity = P.light ? 55 * Math.min(1, 0.4 + P.battery / 100) : 0;
+  // камера
+  if (G.mode !== 'caught') {
+    const bob = P.moving > 0.5 && !P.hidden ? Math.sin(now() * (P.sprint ? 14 : 9)) * (P.crouch ? 0.02 : 0.04) : 0;
+    camera.position.set(P.pos.x, P.pos.y + P.eye + bob, P.pos.z);
+  }
+  camera.rotation.y = P.yaw; camera.rotation.x = P.pitch;
+  setListener(camera.position.x, camera.position.y, camera.position.z, P.yaw);
+  scene.fog.density = P.f === 0 ? 0.085 : (insideHouse(...cellOf(P.pos)) ? 0.05 : 0.04);
+  water();
+  // сердцебиение и виньетка
+  const chased = [hostess, watchman].some(e => e.state === 'chase' && e.distP() < 14) || (thing.state === 'hunt' && P.f === 0);
+  $('vign').style.opacity = chased ? 1 : 0;
+  if (chased) { G.heartT -= dt; if (G.heartT <= 0) { sfx.heart(); G.heartT = 0.75; } }
+  if (G.mode === 'play' || G.mode === 'daybreak') updateHUD();
+}
+function water() { if (T.water) T.water.offset.y -= 0.004; }
+let mt = 0;
+function menuCamera(dt) {
+  mt += dt * 0.08;
+  camera.position.set(cc(9) + Math.sin(mt) * 14, 4.5, -6 + Math.cos(mt) * 4);
+  camera.lookAt(cc(10), 3, cc(8));
+  scene.fog.density = 0.03;
+  for (const l of lamps) l.light.intensity = l.base;
+}
+
+// ---------- старт ----------
+D = DIFFS[diffKey];
+maps = buildMaps();
+G.esc = { gateOpen: false, gate: {}, boat: {}, rail: {}, kite: {} };
+G.dyn = new THREE.Group(); scene.add(G.dyn); G.shards = [];
+refreshMenu();
+requestAnimationFrame(frame);
+
+// отладка и скриншоты
+window.HW = {
+  start: (k) => newGame(k || 'normal'),
+  tp: (f, x, z, yaw = 0, pitch = 0) => { P.f = f; P.pos.set(x * CS, FLOOR_Y[f], z * CS); P.pos.y = heightAt(f, P.pos.x, P.pos.z); P.yaw = yaw; P.pitch = pitch; G.mode = 'play'; hideFade(); },
+  tick: (n = 10, dt = 1 / 30) => { for (let i = 0; i < n; i++) tick(dt); renderer.render(scene, camera); },
+  freeze: () => { G.mode = 'frozen'; },
+  place: (who, f, x, z, yaw) => { const e = { hostess, watchman, thing }[who]; e.place(f, x, z); if (yaw !== undefined) e.yaw = yaw; e.state = 'pause'; e.timer = 999; e.sync(); },
+  wake: () => wakeWatch(),
+  light: (on) => { P.light = on; },
+  crouch: (on) => { P.crouch = on; P.eye = on ? 0.85 : 1.6; },
+  hide: (i) => enterHide(furn.hides[i]),
+  hides: () => furn.hides.map((h, i) => [i, h.f, h.x, h.z, h.type]),
+  give: (id) => { const o = G.objects.find(o => o.id === id); if (o) setHeld(o); },
+  state: () => ({ mode: G.mode, f: P.f, pos: P.pos.toArray(), host: hostess.state, watch: watchman.state, thing: thing.state, day: G.day, focus: focus && focus.label }),
+  G, P, keys,
+  dbg: () => ({ w: [watchman.f, ...watchman.pos.toArray().map(v => +v.toFixed(2)), watchman.state, watchman.path.length, watchman.wait.toFixed(2)], h: [hostess.f, ...hostess.pos.toArray().map(v => +v.toFixed(2)), hostess.state, hostess.path.length] }),
+  wm: () => watchman, doll: () => doll, act: () => doAction(), focus: () => focus && focus.label,
+};

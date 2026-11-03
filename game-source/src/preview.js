@@ -1,0 +1,20 @@
+import * as THREE from 'three';
+import { makeTextures } from './world.js';
+import { makeHostess, makeWatchman, makeDoll, makeThing, makeKid, makeItemMesh } from './models.js';
+const r = new THREE.WebGLRenderer({ antialias: true }); r.setSize(1170, 540); document.body.appendChild(r.domElement);
+r.outputColorSpace = THREE.SRGBColorSpace;
+const s = new THREE.Scene(); s.background = new THREE.Color(0x202028);
+s.add(new THREE.HemisphereLight(0xffffff, 0x333333, 1.6)); const d = new THREE.DirectionalLight(0xffffff, 1.5); d.position.set(2, 4, 5); s.add(d);
+const T = makeTextures('high');
+const h = makeHostess(T); h.position.set(-2.6, 0, 0); s.add(h);
+const w = makeWatchman(T); w.position.set(-1.2, 0, 0); s.add(w);
+const k = makeKid(T, 0x2a5a9a, 'Боря'); k.position.set(0.0, 0, 0); s.add(k);
+const dl = makeDoll(T); dl.position.set(1.1, 1.2, 0); s.add(dl);
+const t = makeThing(T); t.position.set(2.6, 0, 0); s.add(t);
+['rustykey','hook','shedkey','fuel','oil','spool','bandage','gear','slingshot','flaregun'].forEach((id,i)=>{const m=makeItemMesh(id,false); m.position.set(-2.5+i*0.5,0,1.6); m.scale.setScalar(1.6); s.add(m);});
+const c = new THREE.PerspectiveCamera(45, 1170 / 540, 0.1, 50);
+const q = new URLSearchParams(location.search);
+c.position.set(+(q.get('x')||0), +(q.get('y')||1.3), +(q.get('z')||5.8)); c.lookAt(+(q.get('lx')||0), +(q.get('ly')||0.9), 0);
+if (q.get('scare')) { [h,w,dl,t].forEach(m=>m.userData.jaw && (m.userData.jaw.rotation.x = 0.5)); w.userData.face.map = w.userData.faceO; }
+s.add(new THREE.Mesh(new THREE.PlaneGeometry(20, 20).rotateX(-Math.PI / 2), new THREE.MeshLambertMaterial({ color: 0x3a3028 })));
+r.render(s, c); window.done = true;

@@ -1,0 +1,11 @@
+.DS_Store
+*.xcuserstate
+xcuserdata/
+build/
+DerivedData/
+game-source/node_modules/
+game-source/dist/
+game-source/src/glb-data.js
+server/node_modules/
+local.properties
+.gradle/
